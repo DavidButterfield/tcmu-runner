@@ -13,7 +13,8 @@ option(with-qcow "build qcow handler" true)
 option(with-rbd "build Ceph rbd handler" true)
 option(with-zbc "build zbc handler" true)
 option(with-fbo "build fbo handler" true)
-option(with-tcmalloc "link against tcmalloc" true)
+option(with-ram "build ram handler" true)
+option(with-tcmalloc "link against tcmalloc" false)
 
 find_library(LIBNL_LIB nl-3)
 find_library(LIBNL_GENL_LIB nl-genl-3)
@@ -262,6 +263,26 @@ if (with-glfs)
 	  )
 	install(TARGETS handler_glfs DESTINATION ${CMAKE_INSTALL_LIBDIR}/tcmu-runner)
 endif (with-glfs)
+
+if (with-ram)
+	# Stuff for building the ram handler
+	add_library(handler_ram
+	  SHARED
+	  ram.c
+	  )
+	set_target_properties(handler_ram
+	  PROPERTIES
+	  PREFIX ""
+	  )
+	target_include_directories(handler_ram
+	  PUBLIC ${PROJECT_SOURCE_DIR}/ccan
+	  )
+
+	target_link_libraries(handler_ram
+	  ${TCMALLOC_LIB}
+	  )
+	install(TARGETS handler_ram DESTINATION ${CMAKE_INSTALL_LIBDIR}/tcmu-runner)
+endif (with-ram)
 
 if (with-qcow)
 	find_package(ZLIB REQUIRED)
