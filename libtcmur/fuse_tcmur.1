@@ -1,0 +1,120 @@
+fuse_tcmur(1)                    User Commands                     fuse_tcmur(1)
+
+NAME
+    fuse_tcmur - access tcmu-runner devices through a fuse mount
+
+SYNOPSIS
+    fuse_tcmur
+    echo "command" > /tcmur/dev/tcmur
+
+    Commands:
+        load subtype                    # load tcmu-runner handler for subtype
+        unload subtype
+
+        add minornumber /subtype/handler-cfg-string
+        remove minornumber
+
+        help
+        source command-file-name        # read commands from file
+        dump                            # dump the fuse tree structure
+
+DESCRIPTION
+    fuse_tcmur provides access to tcmu-runner devices through a fuse(8) mount.
+    Each tcmu-runner device is represented by a node in the fuse filesystem
+    tree.  The devices can be accessed via the nodes, for example with dd(1),
+    and can be mounted as filesystems.  
+
+    Each tcmu device is denoted by a unique minor number, which is specified
+    when the device is added.  All tcmu-runner handlers share one minor-space.
+
+    The diagram shows the components of the fuse_tcmur program (to the right of
+    kernel).  fuse_tcmur sits in the middle, providing a main program and the
+    translation between fuse operations and tcmu-runner handler operations.
+
+    fuse_tree is a simple tree-structure implemented on libfuse.  Like /proc,
+    the existence of nodes in the tree is controlled only by the server, not
+    through filesystem operations.  But individual leaf nodes may be readable
+    and/or writable through the filesystem depending on permissions.
+
+                                       .--fuse_operations
+                                       |
+    /tcmur <==> kernel <==> libfuse <==> fuse_tree
+                                             ^ |
+                                      -errno | | fuse_node_ops
+                                              \V
+                                        fuse_tcmur
+                                            ^  |
+                                  cmd->done |  | calls to tcmur_*
+                                            |  V
+                                          libtcmur <==> tcmur-handler
+
+    tcmur-handler is one of the binaries in /usr/local/lib/tcmu-runner/.
+
+    libtcmur is a usermode API to the loadable tcmu-runner handlers.  LIO, TCMU,
+    and tcmur-runner are uninvolved -- libtcmur only loads and uses the
+    handlers, and only the block-I/O entry points are called (not handle_cmd).
+
+    fuse_tree(3) and libtcmur(3) are independent -- each usable for its purpose
+    without reference to the other.  In the middle is fuse_tcmur, which links
+    them together, and consists of three parts:
+
+        The main() program initializes the other parts and calls fuse_main().
+
+        The fuse_tcmur part translates I/O requests between fuse and libtcmur.
+
+        The fuse_tcmur_ctl part interprets commands written to a node in the
+        fuse filesystem -- commands can be written with cat(1) or echo(1) to
+        /tcmur/dev/tcmur.
+
+FILES
+    When a handler is loaded, an empty directory node appears for it in
+    /tcmur/sys/modules
+
+    When a device is added, a node appears in /tcmur/dev/<subtype><minornumber>
+
+    The /tcmur/dev nodes appear as regular files (rather than block devices),
+    but they can still be mounted as filesystems, e.g.
+
+            sudo mount /tcmur/dev/ram000 /mnt/k
+
+NOTES
+    The source is in the libtcmur branch (default) at
+    https://github.com/DavidButterfield/tcmu-runner.git
+
+    First make in the main tcmu-runner directory, to get version.h and the binary
+    handlers:
+            cmake .
+            make
+            sudo make install
+
+    Then cd into the libtcmur subdirectory where there is a hacked-up makefile
+    that creates the fuse_tcmur binary.  Today there are no dependencies
+    computed, so always
+            make clean; make
+
+    The program will attempt to create the mount-point directory that fuse will
+    mount on.  This will succeed if the program is run as superuser; otherwise
+    you can create it manually with
+            sudo mkdir /tcmur
+
+    The server presently runs only one thread.  Despite this, the time for a
+    script to download a few repositories and build a software package is only a
+    few percent longer through the fuse mount to a tcmu-runner ramdisk, as
+    compared with a regular kernel filesystem mount to my home directory
+    spinning disk.  (Not an optimal comparison, but it's what I have at hand.)
+
+BUGS
+    No doubt.  This code was born in July 2019.  The makefile leaves much to be
+    desired.
+
+    So far I have only tested it using handler_ram.so, because that's the
+    handler that can be used without figuring out how to install and run
+    sophisticated back-end software.
+
+SEE ALSO
+    fuse_tree(3), libtcmur(3),  fuse(8),  tcmu-runner(8)
+
+AUTHOR
+    David A. Butterfield
+
+Manpage updated 23 Jul 2019

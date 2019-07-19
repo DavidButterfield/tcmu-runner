@@ -1,0 +1,130 @@
+fuse_tree(3)                Linux Programmer's Manual               fuse_tree(3)
+
+NAME
+    fuse_tree -- API to fuse filesystem tree
+
+SYNOPSIS
+    #include "fuse_tree.h"
+
+    error_t fuse_tree_init(const char * mountpoint);
+    error_t fuse_tree_exit(void);
+
+    error_t fuse_loop_run(void * unused);
+
+    fuse_node_t fuse_node_add(
+		const char * name, fuse_node_t parent, mode_t,
+		const struct fuse_node_ops *, uintptr_t data);
+
+    error_t fuse_node_remove(const char * name , fuse_node_t parent);
+
+    fuse_node_t fuse_tree_mkdir(const char * name, fuse_node_t parent);
+    error_t fuse_tree_rmdir(const char * name, fuse_node_t parent);
+
+    fuse_node_t fuse_node_lookup(const char * path);
+
+    uintptr_t fuse_node_data_get(fuse_node_t);
+
+    void fuse_node_update_mode(fuse_node_t, mode_t);
+    void fuse_node_update_size(fuse_node_t, size_t);
+    void fuse_node_update_mtime(fuse_node_t);
+
+    char * fuse_tree_fmt(void);
+
+DESCRIPTION
+    fuse_tree maintains a filesystem tree, implementing fuse_operations.  Like
+    /proc, the tree itself is managed internally by the application -- there is
+    no creation of files or directories through system calls on the mounted fuse
+    filesystem.
+
+    However, also like /proc, individual files represented in the tree may be
+    readable and/or writable through the mounted filesystem, depending on
+    permissions.
+
+    When adding a node to the tree, the application can supply a fuse_node_ops
+    vector specifying functions to be called to back filesystem operations on the
+    node.  The struct fuse_node_ops includes these members, all of which are
+    optional to fill in:
+
+        int     (*open)   (fuse_node_t, uintptr_t data);
+        int     (*release)(fuse_node_t, uintptr_t data);
+        int     (*fsync)  (uintptr_t data, int datasync);
+        ssize_t (*read)   (uintptr_t data, void * buf, size_t, loff_t);
+        ssize_t (*write)  (uintptr_t data, const char * buf, size_t, loff_t);
+
+    fuse_tree_init() should be called before any of the other calls described
+    here, passing the path to the mount point to be used for the fuse mount.
+
+    fuse_tree_exit() should be called last after any other calls described here.
+
+    fuse_loop_run() should be called to run fuse_main().
+
+    fuse_node_add() adds a node with the given name under the given parent node.
+    fuse_node_remove() removes it.  The last "data" argument is private to the caller
+    and is passed to the fuse_node_ops callback functions.
+
+    fuse_tree_mkdir() creates a new child directory fuse_node with the specified
+    name under the specified parent fuse_node.  fuse_tree_rmdir() removes it.
+
+    fuse_node_lookup() returns a pointer to the fuse_node representing the path
+    string. Path string is the full path from the fuse mount, starting with '/'.
+
+    fuse_node_data_get() returns the private data specified to fuse_node_add.
+
+    fuse_node_update_mode() updates the fuse_node's mode permissions.
+
+    fuse_node_update_size() updates the fuse_node's size in bytes.
+
+    fuse_node_update_mtime() updates the fuse_node's modification time to the
+    present.
+
+    fuse_tree_fmt() returns a human-readable string representing the fuse tree.
+    The string should be freed by the caller when done with it.
+
+RETURN VALUE
+    Upon successful completion, functions returning type error_t return zero.
+    Failures return -errno.
+
+    fuse_node_add() and fuse_tree_mkdir() each return a pointer to the new
+    fuse_node, or NULL on error.
+
+    fuse_node_lookup() returns a pointer to the fuse_node, or NULL if the path
+    is not found.
+
+    fuse_tree_fmt() returns a freeable human-readable debugging string
+    representing the fuse tree.
+
+ERRORS
+    fnode_remove()
+	-EBUSY		fuse_node is open by some process through the fuse FS
+	-ENOENT		named fnode not found under parent
+
+    fuse_tree_rmdir()
+	-ENOENT		named fnode not found under parent
+	-ENOTEMPTY	directory node is not empty
+
+    fuse_tree_init()
+	-EINVAL		mountpoint does not start with '/', or it ends in '/'
+
+    fuse_tree_exit()
+	-EBUSY		root node still has child(ren)
+
+    fuse_loop_run()
+	errors returned by fuse_main()
+	errors returned by asprintf()
+
+NOTES
+
+BUGS
+    fuse_node_lookup() should hold the returned node, and a new function should
+    be added to drop it.
+
+    There should be a threading option passed to fuse_loop_run().  At present
+    it always runs fuse single-threaded.
+
+SEE ALSO
+    fuse(8)
+
+AUTHOR
+    David A. Butterfield
+
+Manpage updated 23 Jul 2019

@@ -1,0 +1,174 @@
+libtcmur(3)                 Linux Programmer's Manual                libtcmur(3)
+
+NAME
+    libtcmur -- usermode API to tcmu-runner block storage handlers
+
+SYNOPSIS
+    #include "libtcmur.h"
+
+    error_t libtcmur_init(const char * handler_prefix);
+    error_t libtcmur_exit(void);
+
+    error_t tcmur_handler_load(const char * subtype);
+    error_t tcmur_handler_unload(const char * subtype);
+
+    error_t tcmur_check_config(char const * cfgstring);
+    error_t tcmur_device_add(int minor, const char * cfgstring);
+    error_t tcmur_device_remove(int minor);
+
+    error_t tcmur_read(int minor, struct tcmulib_cmd *,
+			struct iovec *, size_t niov, size_t, loff_t);
+    error_t tcmur_write(int minor, struct tcmulib_cmd *,
+			struct iovec *, size_t niov, size_t, loff_t);
+    error_t tcmur_flush(int minor, struct tcmulib_cmd *);
+
+    ssize_t tcmur_get_size(int minor);
+    ssize_t tcmur_get_block_size(int minor);
+    ssize_t tcmur_get_max_xfer(int minor);
+
+    const char * tcmur_get_dev_name(int minor);
+
+DESCRIPTION
+    libtcmur provides a usermode application programming interface to access
+    block storage services through tcmu-runner block storage handlers.
+
+    Note that LIO, TCMU and tcmu-runner are uninvolved -- libtcmur only calls
+    the tcmu-runner loadable storage handlers, e.g. qcow, glfs, ram, etc.
+
+    libtcmur makes use of the handler read, write, and flush block I/O
+    functions only -- no calls are made to handle_cmd().
+
+    Functions returning type error_t return zero for success, otherwise -errno.
+
+    Call libtcmur_init() once before using libtcmur services.  If handler_prefix
+    is NULL, the default is used: "/usr/local/lib/tcmu-runner/handler_".  The
+    expected handler paths are the concatenation of:
+
+		    handler_prefix  tcmu_subtype  ".so"
+
+    Call libtcmur_exit() once last, after any other functions described here.
+
+    tcmur_handler_load() will dlopen() a tcmu-runner handler of the given
+    subtype and load it into the program for use.  tcmur_handler_unload()
+    unloads it.
+
+    tcmur_check_config() checks a handler device configuration string for
+    validity.  The handler for the configuration must already have been loaded
+    using tcmur_handler_load().  cfgstring takes this form, specifying the
+    handler's TCMU subtype:
+		    /subtype/handler-cfg-string
+
+    See tcmu-runner(8) for more about subtype and handler-cfg-string.
+
+    tcmur_device_add() adds a device, with specified cfgstring, as the
+    specified tcmur minor number.  tcmur_device_remove() removes the specified
+    minor.  The handler is determined from the subtype in the first segment of
+    cfgstring.  All tcmur subtypes share a common space of minor numbers.
+
+    tcmur_read(), tcmur_write() and tcmur_flush() start I/O operations to the
+    specified minor.  Errors in the I/O start process can be reported by -errno
+    return from these calls.  A return value of zero denotes a successful I/O
+    start, in which case there will be a completion call to cmd->done(), which
+    may report either an "sts" error, or success (denoted by TCMU_STS_OK).
+
+    Note that the completion call may occur before the request call returns.
+
+    tcmur_read() and tcmur_write() take an iovec array with niov elements, an
+    I/O size in bytes, and a seek offset into the device where the I/O begins.
+
+    struct tcmulib_cmd includes this field, which must be set before passing
+    the command to tcmur_read(), tcmur_write(), or tcmur_flush():
+
+	cmd_done_t done;	/* completion callback */
+
+    The callback function is of this type:
+
+	typedef
+	void (*cmd_done_t)(struct tcmu_device *, struct tcmulib_cmd *, int);
+
+    The third argument to the callback is TCMU status (see libtcmu_common.h).
+
+    tcmur_get_size() returns the size in bytes of the specified minor.  If the
+    minor does not exist then the return is a -errno.
+
+    tcmur_get_block_size() returns the block size in bytes of the specified
+    minor.  If the minor does not exist then the return is a -errno.
+
+    tcmur_get_max_xfer() returns the maximum I/O size in bytes of the specified
+    minor.  If the minor does not exist then the return is a -errno.
+
+    tcmur_get_dev_name() returns the device name of the specified minor.  If
+    the minor does not exist then the return is NULL.
+
+RETURN VALUE
+    Upon successful completion, functions returning type error_t return zero.
+    All functions return -errno on failure, except tcmur_get_dev_name(), which
+    returns NULL in that case.
+
+ERRORS
+    tcmur_read()
+    tcmur_write()
+	-ENODEV	    no device at specified minor (including minor out of range)
+	-ENXIO	    handler does not implement the requested function
+	-EINVAL	    I/O would exceed device bounds
+	-EIO	    I/O completed with nonzero "sts"
+
+    tcmur_flush()
+	-ENODEV	    no device at specified minor
+	-EIO	    I/O completed with nonzero "sts"
+
+    tcmur_get_size(), tcmur_get_block_size(), tcmur_get_max_xfer()
+	-ENODEV	    no device at specified minor
+
+    tcmur_device_add()
+	-ENODEV	    minor number out of range
+	-EBUSY	    minor number already in use by prior add
+	errors returned by tcmur_check_config()
+	errors returned by rhandler->open()
+
+    tcmur_device_remove()
+	-ENODEV	    no device at specified minor
+
+    tcmur_check_config()
+	-ENXIO	    no loaded handler subtype matches this config string
+	-EINVAL	    config string does not start with '/'
+	-EINVAL	    config string is too long
+	errors returned by rhandler->check_config()
+
+    tcmur_handler_load()
+	-EEXIST	    handler already loaded for the specified subtype
+	-ENOSPC	    all handler slots are in use
+	-ENOMEM	    failed to asprintf the handler path
+	-ENOENT	    failed to dlopen the handler path
+	-EBADF	    failed to dlsym("handler_init")
+	-EIO	    handler_init returned non-zero
+
+    tcmur_handler_unload()
+	-ENOENT	    no handler is loaded for the specified subtype
+	-EBUSY	    handler has existing devices (added but not removed)
+
+    libtcmur_exit()
+	-EBUSY	    a handler is still loaded
+
+NOTES
+
+BUGS
+    Not all symbols possibly referenced by handlers are implemented.
+    Some such symbols are "stubbed out" and print a warning if called.
+    Others do not exist, which will disallow loading of referencing handlers.
+
+    There is no check for an attempt to add the same device twice.
+
+    There is no generic way to specify the device size, block size, or maximum
+    I/O size.
+
+    libtcmur_exit() should auto-unload any handlers that have no devices
+    currently added.
+
+SEE ALSO
+    tcmu-runner(8)
+
+AUTHOR
+    David A. Butterfield
+
+Manpage updated 23 Jul 2019
