@@ -15,21 +15,27 @@
  * libtcmur makes use of the handler read, write, and flush block I/O functions
  * only -- no calls are made to handle_cmd().
  */
-#ifndef __LIBTCMUR_H
-#define __LIBTCMUR_H
-#include <inttypes.h>
+#ifndef LIBTCMUR_H
+#define LIBTCMUR_H
 #include <errno.h>
-#include <sys/uio.h>
 
 /* Include tcmu-runner.h without some things it includes */
-#define __TCMU_ALUA_H		/* alua.h */
-#define __TCMU_SCSI_H		/* scsi.h */
-#define __TCMU_SCSI_DEFS	/* scsi_defs.h */
-#define __TCMUR_AIO_H		/* tcmur_aio.h */
+#define __TCMU_SCSI_DEFS	/* inhibit scsi_defs.h */
+#define __TCMU_ALUA_H		/* inhibit alua.h */
+#define __TCMU_SCSI_H		/* inhibit scsi.h */
 #define HAVE_ISBLANK		1
 #define HAVE_TYPEOF		1
+#ifdef LIST_HEAD
+#define CCAN_LIST_H
+#define list_node list_head
+#endif
+#undef max
+#undef min
+#undef ARRAY_SIZE
+#define ffs UNUSED_ffs
 #include "../tcmu-runner.h"
-#include "../libtcmu_common.h"
+#undef ffs
+
 #include "../version.h"
 
 #define MAX_TCMUR_HANDLERS  64	/* concurrently loaded */
@@ -78,12 +84,12 @@ extern error_t tcmur_device_remove(int minor);
  *
  * Note that the completion call may occur before the request call returns.
  */
-struct tcmulib_cmd;
-extern error_t tcmur_read(int minor, struct tcmulib_cmd *,
-				struct iovec *, size_t niov, size_t, loff_t);
-extern error_t tcmur_write(int minor, struct tcmulib_cmd *,
-				struct iovec *, size_t niov, size_t, loff_t);
-extern error_t tcmur_flush(int minor, struct tcmulib_cmd *);
+struct tcmur_cmd;
+extern error_t tcmur_read(int minor, struct tcmur_cmd *,
+				struct iovec *, size_t niov, size_t, off_t);
+extern error_t tcmur_write(int minor, struct tcmur_cmd *,
+				struct iovec *, size_t niov, size_t, off_t);
+extern error_t tcmur_flush(int minor, struct tcmur_cmd *);
 
 /* tcmur_get_dev_name() returns the device name of the specified minor.
  * If the minor does not exist then the return is NULL.
@@ -101,4 +107,4 @@ extern ssize_t tcmur_get_block_size(int minor);
  */
 extern ssize_t tcmur_get_max_xfer(int minor);
 
-#endif /* __LIBTCMUR_H */
+#endif /* LIBTCMUR_H */

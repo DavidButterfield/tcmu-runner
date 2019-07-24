@@ -6,34 +6,22 @@
  * General Public License, version 2.1 or any later version (LGPLv2.1 or
  * later), or the Apache License 2.0.
  *
- * Main program uses fuse_tree and libtcmur to provide mountable access to
- * tcmu-runner devices.
- *
  * The functions below translate fuse_node_ops into tcmur_*() calls, and
  * _STS_ replies into -errno.
  */
 #define _GNU_SOURCE
 #include <sys/types.h>
 #include <inttypes.h>
-#include <stdbool.h>
 #include <errno.h>
-#include <limits.h>
-#include <stddef.h>
-#include <unistd.h>
-#include <stdlib.h>
-#include <stdio.h>
-#include <string.h>
 
 #include "libtcmur.h"
 #include "fuse_tree.h"
 #include "fuse_tcmur.h"
-#include "sys_misc.h"
-
-#define trace(fmtargs...)       //  sys_msg(fmtargs)
+#include "sys_impl.h"
 
 /***** Ferry an op from fuse to libtcmur and back *****/
 struct fuse_tcmur_op {
-    struct tcmulib_cmd	    cmd;
+    struct tcmur_cmd	    cmd;
     int			    minor;
     struct sys_completion   complete;
     tcmur_status_t	    sts;
@@ -44,11 +32,11 @@ struct fuse_tcmur_op {
 
 /* Callback from the tcmur handler */
 static void
-io_done(struct tcmu_device * tcmu_dev, struct tcmulib_cmd * cmd, tcmur_status_t sts)
+io_done(struct tcmu_device * tcmu_dev, struct tcmur_cmd * cmd, tcmur_status_t sts)
 {
     struct fuse_tcmur_op * op = op_of_cmd(cmd);
     if (sts) {
-	trace("tcmur[%d] OP completes with sts=%d\n", op->minor, op->sts);
+	sys_trace("tcmur[%d] OP completes with sts=%d\n", op->minor, op->sts);
     }
     op->sts = sts;
     sys_complete(&op->complete);
@@ -77,7 +65,7 @@ op_setup(struct fuse_tcmur_op * op, int minor, const void * buf, size_t iosize)
     op->minor = minor;
     sys_completion_init(&op->complete);
 
-    struct tcmulib_cmd * cmd = &op->cmd;
+    struct tcmur_cmd * cmd = &op->cmd;
     cmd->iovec = op->iov;
     cmd->iov_cnt = 1;
     cmd->done = io_done;
@@ -86,7 +74,7 @@ op_setup(struct fuse_tcmur_op * op, int minor, const void * buf, size_t iosize)
 /***** Synchronous fuse_node_ops called from fuse_tree.c *****/
 
 static ssize_t
-dev_read(uintptr_t minor_arg, void * buf, size_t iosize, loff_t lofs)
+dev_read(uintptr_t minor_arg, void * buf, size_t iosize, off_t lofs)
 {
     int minor = (int)minor_arg;
     ssize_t err;
@@ -99,11 +87,11 @@ dev_read(uintptr_t minor_arg, void * buf, size_t iosize, loff_t lofs)
     if (err)
 	return err;
 
-    return (ssize_t)io_wait(&op, iosize);
+    return io_wait(&op, iosize);
 }
 
 static ssize_t
-dev_write(uintptr_t minor_arg, const char * buf, size_t iosize, loff_t lofs)
+dev_write(uintptr_t minor_arg, const char * buf, size_t iosize, off_t lofs)
 {
     int minor = (int)minor_arg;
     ssize_t err;
@@ -144,7 +132,7 @@ static struct fuse_node_ops dev_fops = {
 };
 
 error_t
-fuse_tcmur_init(void)
+fuse_tcmur_init(int major, int max_minors)
 {
     return fuse_tcmur_ctl_init(&dev_fops);
 }
@@ -154,68 +142,3 @@ fuse_tcmur_exit(void)
 {
     return fuse_tcmur_ctl_exit();
 }
-
-#ifdef WANT_MAIN
-
-/* For failure (non-zero), prefers a -errno from FN */
-#define DO_OR_DIE(FN) \
-do { \
-    error_t _err = (FN); \
-    if (_err) { \
-	char * str = fuse_tree_fmt(); \
-	sys_error("'%s' err=%d %s\n%s\n", \
-		    #FN, _err, _err < 0 ? strerror(-_err) : "", str); \
-	exit(1); \
-    } \
-} while (0)
-
-#define DO_OR_WARN(FN) \
-do { \
-    error_t _err = (FN); \
-    if (_err) { \
-	char * str = fuse_tree_fmt(); \
-	sys_warning("'%s' err=%d %s\n%s\n", \
-		    #FN, _err, _err < 0 ? strerror(-_err) : "", str); \
-    } \
-} while (0)
-
-#define DEFAULT_FUSE_TCMUR_MOUNTPOINT "/tcmur"
-static const char * mountpoint = DEFAULT_FUSE_TCMUR_MOUNTPOINT;
-static const char * handler_prefix = DEFAULT_HANDLER_PATH "/handler_";
-
-//XXX Add command-line options to set mountpoint and handler_prefix
-int main(int argc, char * argv[])
-{
-    fuse_node_t fnode_sys;
-
-    DO_OR_DIE(fuse_tree_init(mountpoint));	/* prepare fuse */
-
-    DO_OR_DIE(libtcmur_init(handler_prefix));	/* prepare libtcmur */
-
-    /* create /dev, /sys/module */
-    DO_OR_DIE(!(             fuse_tree_mkdir("dev", NULL) != 0));
-    DO_OR_DIE(!((fnode_sys = fuse_tree_mkdir("sys", NULL)) != 0));
-    DO_OR_DIE(!(             fuse_tree_mkdir("module", fnode_sys) != 0));
-
-    DO_OR_DIE(fuse_tcmur_init());		/* init ctl_fops */
-
-    DO_OR_WARN(fuse_loop_run(NULL));		/* run fuse_main() */
-
-    sleep(1);
-
-    DO_OR_WARN(fuse_tcmur_exit());		/* stop cmdline processing */
-
-    /* remove /dev, /sys/module if empty */
-    DO_OR_WARN(fuse_tree_rmdir("dev", NULL));
-    DO_OR_WARN(fuse_tree_rmdir("module", fnode_sys));
-    DO_OR_WARN(fuse_tree_rmdir("sys", NULL));
-
-    /* -EBUSY if handler(s) still loaded */
-    DO_OR_DIE(libtcmur_exit());			/* free libtcmur context */
-
-    DO_OR_WARN(fuse_tree_exit());		/* free fuse_tree context */
-
-    return 0;
-}
-
-#endif /* WANT_MAIN */

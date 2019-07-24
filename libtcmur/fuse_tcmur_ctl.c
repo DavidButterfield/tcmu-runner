@@ -28,11 +28,12 @@
 #include <signal.h>
 #include <fcntl.h>
 #include <ctype.h>
+#include <sys/stat.h>
 
 #include "libtcmur.h"
 #include "fuse_tree.h"
 #include "fuse_tcmur.h"
-#include "sys_misc.h"
+#include "sys_impl.h"
 
 /* Interactive printf for responses to commands written to control node */
 #define iprintf(fmtargs...) (fprintf(stderr, fmtargs), fflush(stderr))
@@ -40,7 +41,6 @@
 static struct fuse_node_ops * fuse_tcmur_dev_fops;  /* ops for added devices */
 static fuse_node_t fnode_dev;	/* /fuse/dev */
 static fuse_node_t fnode_mod;	/* /fuse/sys/module */
-static fuse_node_t fuse_tcmur_fnodes[MAX_TCMUR_MINORS];
 
 static void
 ctl_help(void)
@@ -60,14 +60,11 @@ ctl_help(void)
     );
 }
 
-#define fnode_of_minor(minor) \
-    ((unsigned int)minor < MAX_TCMUR_MINORS ? fuse_tcmur_fnodes[minor] : NULL)
-
 #define ISblank(c)  isblank((unsigned char)(c))
 #define ISprint(c)  isprint((unsigned char)(c))
 #define ISalnum(c)  isalnum((unsigned char)(c))
 
-/* Delay sending the shutdown signal so fuse can close the ctldev */
+/* Delay sending the shutdown signal so fuse can close the ctldev it received exit command on */
 static void
 exit_handler(int signum)
 {
@@ -150,11 +147,11 @@ nextfield(const char * str)
 
 /* Interpret a string written to ctldev as a program command */
 static ssize_t
-ctl_write(uintptr_t unused, const char * buf, size_t iosize, loff_t lofs)
+ctl_write(uintptr_t unused, const char * buf, size_t iosize, off_t lofs)
 {
-    char const * cmd_str;
-    char const * arg_str;
-    char const * line = buf;
+    const char * cmd_str;
+    const char * arg_str;
+    const char * line = buf;
     size_t size = iosize;
 
     while (size) {
@@ -193,14 +190,17 @@ ctl_write(uintptr_t unused, const char * buf, size_t iosize, loff_t lofs)
 			iprintf("tcmur_device_add(%d, \"%s\") returns %d\n",
 				minor, arg_str, err);
 		    else {
-			assert(!fuse_tcmur_fnodes[minor]);
-			fuse_tcmur_fnodes[minor] =
-			    fuse_node_add(tcmur_get_dev_name(minor), fnode_dev,
-				    S_IFBLK|0664, fuse_tcmur_dev_fops,
-				    (uintptr_t)minor);
-			if (fuse_tcmur_fnodes[minor]) {
-			    fuse_node_update_size(fuse_tcmur_fnodes[minor],
-						(size_t)tcmur_get_size(minor));
+			/* Create the fuse node for the device */
+			fuse_node_t fnode = fuse_node_add(
+						tcmur_get_dev_name(minor),
+						fnode_dev, S_IFBLK|0664,
+						fuse_tcmur_dev_fops,
+						(uintptr_t)minor);
+			if (fnode) {
+			    fuse_node_update_size(fnode,
+					(size_t)tcmur_get_size(minor));
+			    fuse_node_update_block_size(fnode,
+					(size_t)tcmur_get_block_size(minor));
 			}
 		    }
 		}
@@ -219,19 +219,15 @@ ctl_write(uintptr_t unused, const char * buf, size_t iosize, loff_t lofs)
 	    else if (ul > MAX_TCMUR_MINORS)
 		iprintf("Number too big: %ld > %d=max\n", ul, MAX_TCMUR_MINORS-1);
 	    else {
+		error_t err;
 		int minor = (int)ul;
-		fuse_node_t fnode = fnode_of_minor(minor);
-		if (fnode) {
-		    error_t err = fuse_node_remove(tcmur_get_dev_name(minor),
-							fnode_dev);
-		    if (err) {
-			iprintf("%s: %s\n", tcmur_get_dev_name(minor),
-							strerror(-err));
-		    } else {
-			fuse_tcmur_fnodes[minor] = NULL;
-			tcmur_device_remove(minor);
-		    }
+		err = fuse_node_remove(tcmur_get_dev_name(minor), fnode_dev);
+		if (err) {
+		    iprintf("remove %s (%d): %s\n",
+			    tcmur_get_dev_name(minor), minor, strerror(-err));
 		}
+		if (!err)
+		    tcmur_device_remove(minor);
 	    }
 	}
 
@@ -295,7 +291,7 @@ ctl_write(uintptr_t unused, const char * buf, size_t iosize, loff_t lofs)
 	else if (str_match(cmd_str, "dump")) {
 	    char * str = fuse_tree_fmt();
 	    iprintf("%s", str);
-	    sys_free(str);
+	    sys_mem_free(str);
 	}
 
 	else if (*cmd_str == '\0') {
@@ -306,7 +302,7 @@ ctl_write(uintptr_t unused, const char * buf, size_t iosize, loff_t lofs)
 	    iprintf("  ? %s\nTry 'help'\n", copy);
 	}
 
-	sys_free(copy);
+	sys_mem_free(copy);
 
 	/* Advance the main buffer to the start of the next line */
 	while (size && *line && *line != '\n')
@@ -322,7 +318,7 @@ ctl_write(uintptr_t unused, const char * buf, size_t iosize, loff_t lofs)
  * lofs denotes the starting read position in the dump string.
  */
 static ssize_t
-ctl_read(uintptr_t unused, void * buf, size_t iosize, loff_t lofs)
+ctl_read(uintptr_t unused, void * buf, size_t iosize, off_t lofs)
 {
     char * str = fuse_tree_fmt();
     ssize_t ret =  (ssize_t)strlen(str);
@@ -333,7 +329,7 @@ ctl_read(uintptr_t unused, void * buf, size_t iosize, loff_t lofs)
 
     strncpy(buf, str + lofs, iosize);
 
-    sys_free(str);
+    sys_mem_free(str);
     return ret;
 }
 
@@ -345,14 +341,16 @@ static struct fuse_node_ops ctl_fops = {
 error_t
 fuse_tcmur_ctl_init(struct fuse_node_ops * fops)
 {
+    assert_eq(fuse_tcmur_dev_fops, NULL);   /* double init */
+
     /* Thence go ops written to tcmur minors we "add" later */
     fuse_tcmur_dev_fops = fops;
 
     fnode_dev = fuse_node_lookup("/dev");
     fnode_mod = fuse_node_lookup("/sys/module");
 
-    assert(fnode_dev);
-    assert(fnode_mod);
+    assert(fnode_dev, "%s", fuse_tree_fmt());
+    assert(fnode_mod, "%s", fuse_tree_fmt());
 
     /* Make the tcmur control node to receive FS writes of commands */
     fuse_tree_mkdir("tcmur", fnode_mod);
@@ -365,6 +363,7 @@ error_t
 fuse_tcmur_ctl_exit(void)
 {
     error_t err;
+    assert_ne(fuse_tcmur_dev_fops, NULL);
 
     err = fuse_node_remove("tcmur", fnode_dev);
     if (err)

@@ -9,12 +9,12 @@
  * Main program uses fuse_tree and libtcmur to provide mountable access to
  * tcmu-runner devices.
  */
-//#include <sys/types.h>
-#include <inttypes.h>
+#ifndef FUSE_TCMUR_H
+#define FUSE_TCMUR_H
 #include <errno.h>
 
 /* Initialize the interface from fuse_tree to tcmu-runner handler I/O calls */
-extern error_t fuse_tcmur_init(void);
+extern error_t fuse_tcmur_init(int major, int max_minors);
 extern error_t fuse_tcmur_exit(void);
 
 /* fuse_tcmur_ctl_init() sets up a fuse tree with a few initial directories;
@@ -27,3 +27,5 @@ extern error_t fuse_tcmur_exit(void);
 struct fuse_node_ops;
 extern error_t fuse_tcmur_ctl_init(struct fuse_node_ops *);
 extern error_t fuse_tcmur_ctl_exit(void);
+
+#endif /* FUSE_TCMUR_H */

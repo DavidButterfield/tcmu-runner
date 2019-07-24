@@ -20,7 +20,6 @@
 #include <inttypes.h>
 #include <stdbool.h>
 #include <errno.h>
-#include <limits.h>
 #include <stddef.h>
 #include <unistd.h>
 #include <stdlib.h>
@@ -30,9 +29,9 @@
 #include <dlfcn.h>
 
 #include "libtcmur.h"
-#include "sys_misc.h"
+#include "sys_impl.h"
 
-#define tcmu_io_trace_dev(dev, fmtargs...)   // tcmu_dev_info(dev, fmtargs)
+#define tcmu_io_trace_dev(dev, fmtargs...)  //  tcmu_dev_info(dev, "libtcmur: "fmtargs)
 
 /* Print up to two stacktraces of callers per stubbed function */
 #define STUB_WARN() do { \
@@ -47,8 +46,8 @@
  */
 
 /* SCSI-specific */
-extern int tcmur_handle_caw(struct tcmu_device *, struct tcmulib_cmd *, void * fn);
-extern int tcmur_handle_writesame(struct tcmu_device *, struct tcmulib_cmd *, void * fn);
+extern int tcmur_handle_caw(struct tcmu_device *, struct tcmur_cmd *, void * fn);
+extern int tcmur_handle_writesame(struct tcmu_device *, struct tcmur_cmd *, void * fn);
 extern void tcmu_notify_lock_lost(struct tcmu_device *);
 
 uint32_t tcmu_dev_get_opt_unmap_gran(struct tcmu_device *dev) { STUB_WARN(); return 0; }
@@ -58,8 +57,8 @@ void tcmu_dev_set_max_unmap_len(struct tcmu_device *dev, uint32_t len) { STUB_WA
 void tcmu_dev_set_opt_unmap_gran(struct tcmu_device *dev, uint32_t len, bool split) { STUB_WARN(); }
 void tcmu_dev_set_opt_xcopy_rw_len(struct tcmu_device *dev, uint32_t len) { STUB_WARN(); }
 char * tcmu_cfgfs_dev_get_wwn(struct tcmu_device *dev) { STUB_WARN(); return NULL; }
-int tcmur_handle_caw(struct tcmu_device *dev, struct tcmulib_cmd *cmd, void * fn) { STUB_WARN(); return -1; }
-int tcmur_handle_writesame(struct tcmu_device *dev, struct tcmulib_cmd *cmd, void * fn) { STUB_WARN(); return -1; }
+int tcmur_handle_caw(struct tcmu_device *dev, struct tcmur_cmd *cmd, void * fn) { STUB_WARN(); return -1; }
+int tcmur_handle_writesame(struct tcmu_device *dev, struct tcmur_cmd *cmd, void * fn) { STUB_WARN(); return -1; }
 void tcmu_notify_lock_lost(struct tcmu_device *dev) { STUB_WARN(); }
 
 /* Possibly applicable to libtcmur (XXX possible enhancement) */
@@ -74,6 +73,8 @@ void tcmu_notify_conn_lost(struct tcmu_device *dev) { STUB_WARN(); }
 int tcmur_dev_update_size(struct tcmu_device *dev, uint64_t new_size) { STUB_WARN(); return -1; }
 
 /******************************************************************************/
+
+const char * libtcmur_version = "libtcmur " TCMUR_VERSION;
 
 static const char * handler_prefix = DEFAULT_HANDLER_PATH "/handler_";
 static struct tcmur_handler * the_tcmu_handlers[MAX_TCMUR_HANDLERS];
@@ -99,7 +100,7 @@ struct tcmu_device {
  * and pass back its slot number
  */
 static struct tcmur_handler *
-tcmur_find_handler_slot(char const * subtype, int *slotp)
+tcmur_find_handler_slot(const char * subtype, int *slotp)
 {
 	int i;
 	for (i = 0; i < (int)ARRAY_SIZE(the_tcmu_handlers); i++) {
@@ -116,7 +117,7 @@ tcmur_find_handler_slot(char const * subtype, int *slotp)
 
 /* Find handler whose subtype string matches the subtype argument */
 static struct tcmur_handler *
-tcmur_find_handler(char const * subtype)
+tcmur_find_handler(const char * subtype)
 {
 	int slot;
 	return tcmur_find_handler_slot(subtype, &slot);
@@ -124,7 +125,7 @@ tcmur_find_handler(char const * subtype)
 
 /* Return the handler that corresponds to cfgstr */
 static struct tcmur_handler *
-handler_of_cfgstr(char const * cfg)
+handler_of_cfgstr(const char * cfg)
 {
     struct tcmur_handler * handler;
     char * hname;
@@ -142,13 +143,13 @@ handler_of_cfgstr(char const * cfg)
     verify_ge(ret, 0, "asprintf: %s", strerror(errno));
 
     handler = tcmur_find_handler(hname);
-    sys_free(hname);
+    sys_mem_free(hname);
     return handler;
 }
 
 /* Call a handler's check_config function */
 error_t
-tcmur_check_config(char const * cfg)
+tcmur_check_config(const char * cfg)
 {
     error_t err;
     char * reason = NULL;
@@ -182,7 +183,7 @@ tcmur_check_config(char const * cfg)
 	tcmu_warn("handler %s failed check_config(%s) reason: %s\n",
 		    handler->name, cfg, reason?:"none");
 	if (reason)
-	    sys_free(reason);
+	    sys_mem_free(reason);
     }
 
     return err;
@@ -209,7 +210,7 @@ tcmur_register_handler(struct tcmur_handler *handler)
 		}
 	}
 
-	assert(empty_slot >= 0);    /* checked before handler_init() */
+	assert_ge(empty_slot, 0);   /* checked before handler_init() */
 
 	tcmu_info("Handler %s registered, slot=%d\n",
 		    handler->subtype, empty_slot);
@@ -291,6 +292,12 @@ char *tcmu_dev_get_cfgstring(struct tcmu_device *dev)
 	return dev->cfgstring;
 }
 
+void tcmur_cmd_complete(struct tcmu_device *dev, void *data, int sts)
+{
+    struct tcmur_cmd *tcmur_cmd = data;
+    tcmur_cmd->done(dev, tcmur_cmd, sts);
+}
+
 /******** Client calls these functions to invoke handlers ********/
 
 /* tcmur_read(), tcmur_write() and tcmur_flush() start I/O operations to the
@@ -301,11 +308,12 @@ char *tcmu_dev_get_cfgstring(struct tcmu_device *dev)
  */
 
 error_t
-tcmur_read(int minor, struct tcmulib_cmd * cmd,
-	    struct iovec * iov, size_t niov, size_t nbyte, loff_t seekpos)
+tcmur_read(int minor, struct tcmur_cmd * cmd,
+	    struct iovec * iov, size_t niov, size_t nbyte, off_t seekpos)
 {
-    loff_t endpos = seekpos + (ssize_t)nbyte;
+    off_t endpos = seekpos + (ssize_t)nbyte;
     struct tcmu_device * dev = device_of_minor(minor);
+    error_t err = 0;
     tcmur_status_t sts;
 
     if (!dev)
@@ -314,27 +322,38 @@ tcmur_read(int minor, struct tcmulib_cmd * cmd,
 	return -ENXIO;	    /* handler has no read function */
     if (endpos < seekpos)
 	return -EINVAL;	    /* I/O exceeding device bounds */
-    if (endpos > (loff_t)(dev->num_lbas * dev->block_size))
+    if (endpos > (off_t)(dev->num_lbas * dev->block_size))
 	return -EINVAL;	    /* I/O exceeding device bounds */
 
     tcmu_io_trace_dev(dev, "READ %lu bytes at offset %lu\n", nbyte, seekpos);
 
-    /* XXX Do handlers look at these, or only at the arguments? */
+    /* XXX Do handlers look at these, or only at the passed arguments? */
     cmd->iovec = iov;
     cmd->iov_cnt = niov;
 
     sts = dev->rhandler->read(dev, cmd, iov, niov, nbyte, seekpos);
-    assert_eq(sts, TCMU_STS_OK);
+    if (sts == TCMU_STS_OK) {
+	//XXX should let our caller do this
+	if (dev->rhandler->nr_threads)
+	    tcmur_cmd_complete(dev, cmd, sts);
+    } else {
+	tcmu_io_trace_dev(dev, "READ ERROR sts=%d", sts);
+	if (sts == TCMU_STS_NO_RESOURCE)
+	    err = -ENOMEM;
+	else
+	    err = -EIO;
+    }
 
-    return 0;
+    return err;
 }
 
 error_t
-tcmur_write(int minor, struct tcmulib_cmd * cmd,
-	    struct iovec * iov, size_t niov, size_t nbyte, loff_t seekpos)
+tcmur_write(int minor, struct tcmur_cmd * cmd,
+	    struct iovec * iov, size_t niov, size_t nbyte, off_t seekpos)
 {
-    loff_t endpos = seekpos + (ssize_t)nbyte;
+    off_t endpos = seekpos + (ssize_t)nbyte;
     struct tcmu_device * dev = device_of_minor(minor);
+    error_t err = 0;
     tcmur_status_t sts;
 
     if (!dev)
@@ -343,25 +362,36 @@ tcmur_write(int minor, struct tcmulib_cmd * cmd,
 	return -ENXIO;	    /* handler has no write function */
     if (endpos < seekpos)
 	return -EINVAL;	    /* I/O exceeding device bounds */
-    if (endpos > (loff_t)(dev->num_lbas * dev->block_size))
+    if (endpos > (off_t)(dev->num_lbas * dev->block_size))
 	return -EINVAL;	    /* I/O exceeding device bounds */
 
     tcmu_io_trace_dev(dev, "WRITE %lu bytes at offset %lu\n", nbyte, seekpos);
 
-    /* XXX Do handlers look at these, or only at the arguments? */
+    /* XXX Do handlers look at these, or only at the passed arguments? */
     cmd->iovec = iov;
     cmd->iov_cnt = niov;
 
     sts = dev->rhandler->write(dev, cmd, iov, niov, nbyte, seekpos);
-    assert_eq(sts, TCMU_STS_OK);
+    if (sts == TCMU_STS_OK) {
+	//XXX should let our caller do this
+	if (dev->rhandler->nr_threads)
+	    tcmur_cmd_complete(dev, cmd, sts);
+    } else {
+	tcmu_io_trace_dev(dev, "WRITE ERROR sts=%d", sts);
+	if (sts == TCMU_STS_NO_RESOURCE)
+	    err = -ENOMEM;
+	else
+	    err = -EIO;
+    }
 
-    return 0;
+    return err;
 }
 
 error_t
-tcmur_flush(int minor, struct tcmulib_cmd * cmd)
+tcmur_flush(int minor, struct tcmur_cmd * cmd)
 {
     struct tcmu_device * dev = device_of_minor(minor);
+    error_t err = 0;
     tcmur_status_t sts;
 
     if (!dev)
@@ -372,9 +402,19 @@ tcmur_flush(int minor, struct tcmulib_cmd * cmd)
     tcmu_io_trace_dev(dev, "flush\n");
 
     sts = dev->rhandler->flush(dev, cmd);
-    assert_eq(sts, TCMU_STS_OK);
+    if (sts == TCMU_STS_OK) {
+	//XXX should let our caller do this
+	if (dev->rhandler->nr_threads)
+	    tcmur_cmd_complete(dev, cmd, sts);
+    } else {
+	tcmu_io_trace_dev(dev, "FLUSH ERROR sts=%d", sts);
+	if (sts == TCMU_STS_NO_RESOURCE)
+	    err = -ENOMEM;
+	else
+	    err = -EIO;
+    }
 
-    return 0;
+    return err;
 }
 
 /******** Client calls these functions to manage devices and handlers ********/
@@ -443,9 +483,9 @@ tcmur_device_add(int minor, const char * cfg)
     //    knows how to tell if two cfgstrings refer to the same device.
     //	  (But we could still check for identical *strings* here)
 
-    dev = sys_zalloc(sizeof(*dev));
+    dev = sys_mem_zalloc(sizeof(*dev));
     dev->rhandler = handler_of_cfgstr(cfg);
-    assert(dev->rhandler);
+    assert_ne(dev->rhandler, 0);
 
     /* Advance over handler_name to the handler-specific cfg string */
     cfg = strchrnul(cfg+1, '/');
@@ -468,7 +508,7 @@ tcmur_device_add(int minor, const char * cfg)
     /* handler->open() might corrupt the config string using strtok() */
     memcpy(dev->cfgstring, dev->cfgstring_orig, sizeof(dev->cfgstring));
 
-#if 0
+#if 0	//XXX no tcmu_cfgfs_dev_get_*()
 	block_size = tcmu_cfgfs_dev_get_attr_int(dev, "hw_block_size");
 	if (block_size <= 0) {
 		tcmu_dev_err(dev, "Could not get hw_block_size\n");
@@ -516,7 +556,7 @@ tcmur_device_add(int minor, const char * cfg)
     return 0;
 
 fail_free:
-    sys_free(dev);
+    sys_mem_free(dev);
     return err;
 }
 
@@ -535,7 +575,7 @@ tcmur_device_remove(int minor)
     if (dev->rhandler->close)
 	dev->rhandler->close(dev);
 
-    sys_free(dev);
+    sys_mem_free(dev);
     return 0;
 }
 
@@ -544,7 +584,7 @@ tcmur_device_remove(int minor)
  *	    concatenate(handler_prefix, subtype, ".so")
  */
 error_t
-tcmur_handler_load(char const * subtype)
+tcmur_handler_load(const char * subtype)
 {
     char *error;
     char *path;
@@ -596,7 +636,7 @@ tcmur_handler_load(char const * subtype)
     }
 
 out_free:
-    sys_free(path);
+    sys_mem_free(path);
     return ret;
 
 err_close:
@@ -605,7 +645,7 @@ err_close:
 }
 
 error_t
-tcmur_handler_unload(char const * subtype)
+tcmur_handler_unload(const char * subtype)
 {
     int slot;
     int i;

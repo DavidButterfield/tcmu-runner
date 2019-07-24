@@ -16,11 +16,9 @@
  */
 #ifndef FUSE_TREE_H
 #define FUSE_TREE_H
-//#include <sys/types.h>
+#include <sys/types.h>
 #include <inttypes.h>
 #include <errno.h>
-//#include <unistd.h>
-#include <sys/stat.h>
 
 typedef struct fuse_node * fuse_node_t;
 
@@ -28,8 +26,8 @@ typedef struct fuse_node * fuse_node_t;
 struct fuse_node_ops {
     int	    (* open)   (fuse_node_t, uintptr_t data);
     int	    (* release)(fuse_node_t, uintptr_t data);
-    ssize_t (* read)   (uintptr_t data, void * buf, size_t len, loff_t ofs);
-    ssize_t (* write)  (uintptr_t data, const char * buf, size_t, loff_t);
+    ssize_t (* read)   (uintptr_t data, void * buf, size_t len, off_t ofs);
+    ssize_t (* write)  (uintptr_t data, const char * buf, size_t, off_t);
     int	    (* fsync)  (uintptr_t data, int datasync);
 };
 
@@ -42,11 +40,12 @@ extern fuse_node_t fuse_node_add(
 		const struct fuse_node_ops *, uintptr_t data);
 extern error_t fuse_node_remove(const char *name , fuse_node_t parent);
 
-extern fuse_node_t fuse_tree_mkdir(char const * name, fuse_node_t parent);
-extern error_t fuse_tree_rmdir(char const * name, fuse_node_t parent);
+extern fuse_node_t fuse_tree_mkdir(const char * name, fuse_node_t parent);
+extern error_t fuse_tree_rmdir(const char * name, fuse_node_t parent);
 
 /* path is the full path from the fuse mount, starting with '/' */
 extern fuse_node_t fuse_node_lookup(const char * path);
+extern fuse_node_t fuse_node_lookupat(fuse_node_t fnode_root, const char *);
 
 /* Return the private data specified to fuse_node_add */
 extern uintptr_t fuse_node_data_get(fuse_node_t);
@@ -57,8 +56,14 @@ extern void fuse_node_update_mode(fuse_node_t, mode_t);
 /* Update the fuse_node's size */
 extern void fuse_node_update_size(fuse_node_t, size_t);
 
+/* Update the fuse_node's block_size */
+extern void fuse_node_update_block_size(fuse_node_t fnode, size_t size);
+
 /* Update the fuse_node's modification time to the present */
 extern void fuse_node_update_mtime(fuse_node_t);
+
+/* Set the fuse_node's rdev */
+extern void fuse_node_update_rdev(fuse_node_t fnode, dev_t rdev);
 
 /* Call in this order */
 extern error_t fuse_tree_init(const char * mountpoint);

@@ -6,21 +6,24 @@
  * General Public License, version 2.1 or any later version (LGPLv2.1 or
  * later), or the Apache License 2.0.
  */
-
 #define _GNU_SOURCE
-#include <stdint.h>
-#include <pthread.h>
-#include <unistd.h>
-#include <string.h>
 #include <sys/types.h>
-#include <sys/stat.h>
-#include <fcntl.h>
+#include <stdint.h>
 #include <errno.h>
 #include <limits.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <unistd.h>
 
-#include "libtcmu_log.h"
-#include "libtcmu_config.h"
-#include "libtcmu_time.h"
+#include "libtcmur.h"	    /* must include before sys_impl.h */
+#include "sys_impl.h"	    /* must include before libtcmu_config.h */
+
+#include "../libtcmu_log.h"
+#include "../libtcmu_config.h"
+#include "../libtcmu_time.h"
+
+#include <pthread.h>
 
 static int tcmu_log_level = TCMU_LOG_INFO;
 
@@ -53,7 +56,7 @@ static inline int to_syslog_level(int level)
 /* get the log level of tcmu-runner */
 unsigned int tcmu_get_log_level(void)
 {
-	return tcmu_log_level;
+	return (unsigned)tcmu_log_level;
 }
 
 void tcmu_set_log_level(int level)
@@ -82,7 +85,7 @@ log_internal(int pri, struct tcmu_device *dev, const char *funcname,
 	if (!fmt)
 		return;
 
-	vfprintf(stderr, fmt, args);
+	sys_vfprintf(stderr, fmt, args);
 }
 
 void tcmu_crit_message(struct tcmu_device *dev, const char *funcname,

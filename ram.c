@@ -33,14 +33,12 @@
 #include "tcmu-runner.h"
 #include "tcmur_device.h"
 
-#define ROUND_DOWN(v, q)    ((v) / (q) * (q))
-
 #ifndef PAGE_SIZE
 #define PAGE_SIZE	    4096
 #endif
 
 #define BLOCK_SIZE	    PAGE_SIZE
-#define DEFAULT_FILE_SIZE   (1*1024*1024*1024l)
+#define DEFAULT_FILE_SIZE   (1*1024*1024*1024l)	    //XXX get from cfg string
 
 typedef struct tcmu_ram {
 	void	      *	ram;
@@ -59,41 +57,31 @@ static inline bool do_mlock(struct tcmu_device *td)
 static int tcmu_ram_read(struct tcmu_device *td, struct tcmur_cmd *cmd,
 	      struct iovec *iov, size_t niov, size_t size, off_t seekpos)
 {
-	int sts = TCMU_STS_OK;
 	state_t s = tcmur_dev_get_private(td);
-
 	if (seekpos >= s->size || seekpos + size > s->size)
-	    sts = TCMU_STS_RANGE;
-	else
-	    tcmu_memcpy_into_iovec(iov, niov, s->ram + seekpos, size);
+		return TCMU_STS_RANGE;
 
-	tcmur_cmd_complete(td, cmd, sts);
+	tcmu_memcpy_into_iovec(iov, niov, s->ram + seekpos, size);
 	return TCMU_STS_OK;
 }
 
 static int tcmu_ram_write(struct tcmu_device *td, struct tcmur_cmd *cmd,
 	       struct iovec *iov, size_t niov, size_t size, off_t seekpos)
 {
-	int sts = TCMU_STS_OK;
 	state_t s = tcmur_dev_get_private(td);
-
 	if (seekpos >= s->size || seekpos + size > s->size)
-	    sts = TCMU_STS_RANGE;
-	else
-	    tcmu_memcpy_from_iovec(s->ram + seekpos, size, iov, niov);
+		return TCMU_STS_RANGE;
 
-	tcmur_cmd_complete(td, cmd, sts);
+	tcmu_memcpy_from_iovec(s->ram + seekpos, size, iov, niov);
 	return TCMU_STS_OK;
 }
 
 static int tcmu_ram_flush(struct tcmu_device *td, struct tcmur_cmd *cmd)
 {
 	state_t s = tcmur_dev_get_private(td);
-
 	if (msync(s->ram, s->size, MS_SYNC) < 0)
 		return TCMU_STS_WR_ERR;
 
-	tcmur_cmd_complete(td, cmd, TCMU_STS_OK);
 	return TCMU_STS_OK;
 }
 
@@ -153,7 +141,7 @@ static int tcmu_ram_open(struct tcmu_device * td, bool reopen)
 					 config, err, strerror(err));
 			goto out_fail;
 		}
-		file_size = ROUND_DOWN(lseek(mmap_fd, 0, SEEK_END),
+		file_size = round_down(lseek(mmap_fd, 0, SEEK_END),
 					tcmu_dev_get_block_size(td));
 	}
 
@@ -232,6 +220,7 @@ struct tcmur_handler tcmu_ram_handler = {
 	.read	       = tcmu_ram_read,
 	.write	       = tcmu_ram_write,
 	.flush	       = tcmu_ram_flush,
+	.nr_threads    = 1, /* implies op completes before return from callout */
 };
 
 int handler_init(void)

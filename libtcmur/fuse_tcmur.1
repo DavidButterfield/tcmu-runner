@@ -94,7 +94,7 @@ NOTES
 
     The program will attempt to create the mount-point directory that fuse will
     mount on.  This will succeed if the program is run as superuser; otherwise
-    you can create it manually with
+    you can create it manually first with
             sudo mkdir /tcmur
 
     The server presently runs only one thread.  Despite this, the time for a
@@ -107,9 +107,9 @@ BUGS
     No doubt.  This code was born in July 2019.  The makefile leaves much to be
     desired.
 
-    So far I have only tested it using handler_ram.so, because that's the
-    handler that can be used without figuring out how to install and run
-    sophisticated back-end software.
+    So far I have only tested it using handler_file.so and handler_ram.so,
+    because those are the handlers that can be used without figuring out how to
+    install and run sophisticated back-end software.
 
 SEE ALSO
     fuse_tree(3), libtcmur(3),  fuse(8),  tcmu-runner(8)
