@@ -56,7 +56,7 @@ static inline bool do_mlock(struct tcmu_device *td)
 	return false;	    //XXX Needs a config switch
 }
 
-static int tcmu_ram_read(struct tcmu_device *td, struct tcmulib_cmd *cmd,
+static int tcmu_ram_read(struct tcmu_device *td, struct tcmur_cmd *cmd,
 	      struct iovec *iov, size_t niov, size_t size, off_t seekpos)
 {
 	int sts = TCMU_STS_OK;
@@ -67,11 +67,11 @@ static int tcmu_ram_read(struct tcmu_device *td, struct tcmulib_cmd *cmd,
 	else
 	    tcmu_memcpy_into_iovec(iov, niov, s->ram + seekpos, size);
 
-	cmd->done(td, cmd, sts);
+	tcmur_cmd_complete(td, cmd, sts);
 	return TCMU_STS_OK;
 }
 
-static int tcmu_ram_write(struct tcmu_device *td, struct tcmulib_cmd *cmd,
+static int tcmu_ram_write(struct tcmu_device *td, struct tcmur_cmd *cmd,
 	       struct iovec *iov, size_t niov, size_t size, off_t seekpos)
 {
 	int sts = TCMU_STS_OK;
@@ -82,18 +82,18 @@ static int tcmu_ram_write(struct tcmu_device *td, struct tcmulib_cmd *cmd,
 	else
 	    tcmu_memcpy_from_iovec(s->ram + seekpos, size, iov, niov);
 
-	cmd->done(td, cmd, sts);
+	tcmur_cmd_complete(td, cmd, sts);
 	return TCMU_STS_OK;
 }
 
-static int tcmu_ram_flush(struct tcmu_device *td, struct tcmulib_cmd *cmd)
+static int tcmu_ram_flush(struct tcmu_device *td, struct tcmur_cmd *cmd)
 {
 	state_t s = tcmur_dev_get_private(td);
 
 	if (msync(s->ram, s->size, MS_SYNC) < 0)
 		return TCMU_STS_WR_ERR;
 
-	cmd->done(td, cmd, TCMU_STS_OK);
+	tcmur_cmd_complete(td, cmd, TCMU_STS_OK);
 	return TCMU_STS_OK;
 }
 
