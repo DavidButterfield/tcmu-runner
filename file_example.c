@@ -45,6 +45,8 @@ static int file_open(struct tcmu_device *dev, bool reopen)
 {
 	struct file_state *state;
 	char *config;
+	off_t file_size;
+	size_t block_size;
 
 	state = calloc(1, sizeof(*state));
 	if (!state)
@@ -66,6 +68,16 @@ static int file_open(struct tcmu_device *dev, bool reopen)
 		tcmu_err("could not open %s: %m\n", config);
 		goto err;
 	}
+
+	block_size = tcmu_dev_get_block_size(dev);
+	if (!block_size) {
+	    block_size = 4096;
+	    tcmu_dev_set_block_size(dev, block_size);
+	}
+
+	file_size = round_down(lseek(state->fd, 0, SEEK_END), block_size);
+	if (file_size)
+	    tcmu_dev_set_num_lbas(dev, file_size / block_size);
 
 	tcmu_dbg("config %s\n", tcmu_dev_get_cfgstring(dev));
 
