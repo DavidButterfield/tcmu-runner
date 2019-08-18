@@ -73,4 +73,12 @@ extern error_t fuse_tree_init(const char * mountpoint);
 extern error_t fuse_loop_run(void * unused);
 extern error_t fuse_tree_exit(void);
 
+/* fuse_bio calls XXX */
+struct block_device;
+extern error_t fuse_bio_init(void);
+extern error_t fuse_bio_exit(void);
+extern error_t fuse_bio_add(int minor, struct block_device * bdev);
+extern error_t fuse_bio_remove(int minor);
+extern struct file_operations fuse_bio_ops;
+
 #endif /* FUSE_TREE_H */

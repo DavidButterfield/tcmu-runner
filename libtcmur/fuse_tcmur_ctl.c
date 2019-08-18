@@ -190,6 +190,9 @@ ctl_write(struct file * unused, const char * buf, size_t iosize, off_t * lofsp)
 			iprintf("tcmur_device_add(%d, \"%s\") returns %d\n",
 				minor, arg_str, err);
 		    else {
+#ifdef CONFIG_BIO
+			bio_tcmur_add(minor);
+#else
 			/* Create the fuse node for the device */
 			fuse_node_t fnode = fuse_node_add(
 						tcmur_get_dev_name(minor),
@@ -202,6 +205,7 @@ ctl_write(struct file * unused, const char * buf, size_t iosize, off_t * lofsp)
 			    fuse_node_update_block_size(fnode,
 					(size_t)tcmur_get_block_size(minor));
 			}
+#endif
 		    }
 		}
 	    }
@@ -221,11 +225,15 @@ ctl_write(struct file * unused, const char * buf, size_t iosize, off_t * lofsp)
 	    else {
 		error_t err;
 		int minor = (int)ul;
+#ifdef CONFIG_BIO
+		err = bio_tcmur_remove(minor);
+#else
 		err = fuse_node_remove(tcmur_get_dev_name(minor), fnode_dev);
 		if (err) {
 		    iprintf("remove %s (%d): %s\n",
 			    tcmur_get_dev_name(minor), minor, strerror(-err));
 		}
+#endif
 		if (!err)
 		    tcmur_device_remove(minor);
 	    }

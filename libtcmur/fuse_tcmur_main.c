@@ -44,10 +44,14 @@ static const char * mountpoint = DEFAULT_FUSE_TCMUR_MOUNTPOINT;
 static const char * handler_prefix = DEFAULT_HANDLER_PATH "/handler_";
 static int tcmur_major_number;
 static int tcmur_max_minors = 256;
+#ifdef CONFIG_BIO
+static bool enable_bio = false;
+#endif
 
 //XXX Add command-line options to specify:
 //	    mountpoint
 //	    handler_prefix
+//	    enable_bio
 //	    tcmur_major_number
 //	    tcmur_max_minors
 
@@ -64,12 +68,25 @@ int main(int argc, char * argv[])
     DO_OR_DIE(!((fnode_sys = fuse_tree_mkdir("sys", NULL)) != 0));
     DO_OR_DIE(!(             fuse_tree_mkdir("module", fnode_sys) != 0));
 
-    /* init direct fuse->tcmur translation */
-    DO_OR_DIE(fuse_tcmur_init(tcmur_major_number, tcmur_max_minors));
+#ifdef CONFIG_BIO
+    if (enable_bio) {
+	/* init fuse->bio translation and bio->tcmur translation */
+	DO_OR_DIE(fuse_bio_init());
+	DO_OR_DIE(bio_tcmur_init(tcmur_major_number, tcmur_max_minors));
+    } else
+#endif
+      /* init direct fuse->tcmur translation */
+      DO_OR_DIE(fuse_tcmur_init(tcmur_major_number, tcmur_max_minors));
 
     DO_OR_WARN(fuse_loop_run(NULL));		/* run fuse_main() */
 
-    DO_OR_WARN(fuse_tcmur_exit());
+#ifdef CONFIG_BIO
+    if (enable_bio) {
+	DO_OR_WARN(bio_tcmur_exit());
+	DO_OR_WARN(fuse_bio_exit());
+    } else
+#endif
+      DO_OR_WARN(fuse_tcmur_exit());
 
     /* remove /dev, /sys/module if empty */
     DO_OR_WARN(fuse_tree_rmdir("dev", NULL));

@@ -107,4 +107,13 @@ extern ssize_t tcmur_get_block_size(int minor);
  */
 extern ssize_t tcmur_get_max_xfer(int minor);
 
+/* bio_tcmur */
+extern error_t bio_tcmur_init(int major, int max_minor);
+extern error_t bio_tcmur_exit(void);
+extern error_t bio_tcmur_add(int minor);
+extern error_t bio_tcmur_remove(int minor);
+
+struct block_device;
+extern struct block_device * bio_tcmur_bdev(int minor);
+
 #endif /* LIBTCMUR_H */

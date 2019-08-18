@@ -7,7 +7,6 @@ CFLAGS += -DCONFIG_BIO -DUSE_UMC
 CFLAGS += -I ../../usermode_compat/src
 CFLAGS += -I ../../usermode_compat/src/arch/x86/include
 CFLAGS += -I ../../usermode_compat/src/include
-LIBS += ../../usermode_compat/src/usermode_lib.a -lmte
 endif
 
 CFLAGS += -DDEBUG
@@ -90,8 +89,16 @@ H_ALL += $(H_SYS) $(H_FUSE) $(H_RUNNER)
 
 .c.o:	$(H_ALL)
 
+ifndef CONFIG_BIO
+
 all:	fuse_tcmur
 	$(MAKE) -i cscope
+
+else
+
+all:	libfusetree.a libtcmur.a
+
+endif
 
 fuse_tcmur: ../version.h fuse_tcmur_main.o libfusetree.a libtcmur.a
 	$(CC) $(CFLAGS) -o $@ $(LDFLAGS) fuse_tcmur_main.o libfusetree.a libtcmur.a $(LIBS)
