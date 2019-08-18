@@ -23,22 +23,22 @@
 #include <stddef.h>
 #include <unistd.h>
 #include <stdlib.h>
-#include <stdio.h>
-#include <string.h>
 #include <signal.h>
 #include <fcntl.h>
 #include <ctype.h>
 #include <sys/stat.h>
 
+#include "sys_impl.h"
 #include "libtcmur.h"
 #include "fuse_tree.h"
 #include "fuse_tcmur.h"
-#include "sys_impl.h"
+
+#include <string.h>	    /* include after sys_impl.h */
 
 /* Interactive printf for responses to commands written to control node */
 #define iprintf(fmtargs...) (fprintf(stderr, fmtargs), fflush(stderr))
 
-static struct fuse_node_ops * fuse_tcmur_dev_fops;  /* ops for added devices */
+static struct file_operations * fuse_tcmur_dev_fops;  /* ops for added devices */
 static fuse_node_t fnode_dev;	/* /fuse/dev */
 static fuse_node_t fnode_mod;	/* /fuse/sys/module */
 
@@ -53,7 +53,7 @@ ctl_help(void)
 	"   unload handler_subtype\n"
 	"   source filename	    # read commands from filename\n"
 	"   dump		    # print a representation of the fuse tree\n"
-	"   exit\n"
+//	"   exit\n"
 //	"   echo rest of line up to comment\n"
 //	"   # ignore to end of line\n"
 //	"   help\n"
@@ -147,7 +147,7 @@ nextfield(const char * str)
 
 /* Interpret a string written to ctldev as a program command */
 static ssize_t
-ctl_write(uintptr_t unused, const char * buf, size_t iosize, off_t lofs)
+ctl_write(struct file * unused, const char * buf, size_t iosize, off_t * lofsp)
 {
     const char * cmd_str;
     const char * arg_str;
@@ -195,7 +195,7 @@ ctl_write(uintptr_t unused, const char * buf, size_t iosize, off_t lofs)
 						tcmur_get_dev_name(minor),
 						fnode_dev, S_IFBLK|0664,
 						fuse_tcmur_dev_fops,
-						(uintptr_t)minor);
+						(void *)(uintptr_t)minor);
 			if (fnode) {
 			    fuse_node_update_size(fnode,
 					(size_t)tcmur_get_size(minor));
@@ -315,32 +315,33 @@ ctl_write(uintptr_t unused, const char * buf, size_t iosize, off_t lofs)
 }
 
 /* Respond to reads from ctldev with a dump of the fuse tree --
- * lofs denotes the starting read position in the dump string.
+ * *lofsp denotes the starting read position in the dump string.
  */
 static ssize_t
-ctl_read(uintptr_t unused, void * buf, size_t iosize, off_t lofs)
+ctl_read(struct file * unused, void * buf, size_t iosize, off_t * lofsp)
 {
     char * str = fuse_tree_fmt();
     ssize_t ret =  (ssize_t)strlen(str);
-    if (ret <= lofs)
+    if (ret <= *lofsp)
 	return 0;
 
-    ret -= lofs;
+    ret -= *lofsp;
 
-    strncpy(buf, str + lofs, iosize);
+    strncpy(buf, str + *lofsp, iosize);
 
     sys_mem_free(str);
     return ret;
 }
 
-static struct fuse_node_ops ctl_fops = {
+static struct file_operations ctl_fops = {
     .read = ctl_read,
     .write = ctl_write,
 };
 
 error_t
-fuse_tcmur_ctl_init(struct fuse_node_ops * fops)
+fuse_tcmur_ctl_init(struct file_operations * fops)
 {
+    assert_ne(fops, NULL);
     assert_eq(fuse_tcmur_dev_fops, NULL);   /* double init */
 
     /* Thence go ops written to tcmur minors we "add" later */
@@ -349,8 +350,8 @@ fuse_tcmur_ctl_init(struct fuse_node_ops * fops)
     fnode_dev = fuse_node_lookup("/dev");
     fnode_mod = fuse_node_lookup("/sys/module");
 
-    assert(fnode_dev, "%s", fuse_tree_fmt());
-    assert(fnode_mod, "%s", fuse_tree_fmt());
+    assert_ne(fnode_dev, 0, "%s", fuse_tree_fmt());
+    assert_ne(fnode_mod, 0, "%s", fuse_tree_fmt());
 
     /* Make the tcmur control node to receive FS writes of commands */
     fuse_tree_mkdir("tcmur", fnode_mod);
@@ -363,7 +364,7 @@ error_t
 fuse_tcmur_ctl_exit(void)
 {
     error_t err;
-    assert_ne(fuse_tcmur_dev_fops, NULL);
+    assert_ne(fuse_tcmur_dev_fops, 0, "exit without init");
 
     err = fuse_node_remove("tcmur", fnode_dev);
     if (err)

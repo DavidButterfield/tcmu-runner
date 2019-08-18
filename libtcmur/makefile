@@ -1,5 +1,15 @@
 # hacked-up makefile with bogus dependencies
 
+#CONFIG_BIO = 1		# define this to use BIO
+
+ifdef CONFIG_BIO
+CFLAGS += -DCONFIG_BIO -DUSE_UMC
+CFLAGS += -I ../../usermode_compat/src
+CFLAGS += -I ../../usermode_compat/src/arch/x86/include
+CFLAGS += -I ../../usermode_compat/src/include
+LIBS += ../../usermode_compat/src/usermode_lib.a -lmte
+endif
+
 CFLAGS += -DDEBUG
 # CFLAGS += -O3
 
@@ -23,14 +33,29 @@ WFLAGS_WARN += -Wunsafe-loop-optimizations
 
 WFLAGS_WARN += -Winit-self
 WFLAGS_WARN += -Wswitch-enum
-WFLAGS_WARN += -Wredundant-decls
 WFLAGS_WARN += -Wformat=2
 
-WFLAGS_WARN += -Wpointer-arith
 WFLAGS_WARN += -Wswitch-default
 WFLAGS_WARN += -Wbad-function-cast
-WFLAGS_WARN += -Wshadow
+
+ifndef CONFIG_BIO
+
 WFLAGS_WARN += -Wconversion
+WFLAGS_WARN += -Wpointer-arith
+WFLAGS_WARN += -Wredundant-decls
+WFLAGS_WARN += -Wshadow
+
+else
+
+#XXX These occur when compiling using UMC
+# WFLAGS_WARN += -Wconversion
+# WFLAGS_WARN += -Wpointer-arith
+# WFLAGS_WARN += -Wredundant-decls
+# WFLAGS_WARN += -Wshadow
+WFLAGS_INHIBIT += -Wno-sign-compare
+WFLAGS_INHIBIT += -Wno-attributes
+
+endif
 
 # This only warns if -fstrict-aliasing is enabled (e.g. by -O2), in which case the warning is important
 WFLAGS_WARN += -Wstrict-aliasing
@@ -89,6 +114,8 @@ cscope:
 
 clean:
 	rm -f *.o *.a fuse_tcmur cscope.out tags
+
+extraclean: clean
 
 VALGRIND_OPTS = --leak-check=full --show-leak-kinds=all --num-callers=30 --track-fds=yes --sim-hints=no-nptl-pthread-stackcache --track-origins=yes
 

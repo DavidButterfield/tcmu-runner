@@ -14,10 +14,10 @@
 #include <stdbool.h>
 #include <errno.h>
 
+#include "sys_impl.h"
 #include "libtcmur.h"
 #include "fuse_tree.h"
 #include "fuse_tcmur.h"
-#include "sys_impl.h"
 
 /* For failure (non-zero), prefers a -errno from FN */
 #define DO_OR_DIE(FN) \
@@ -49,7 +49,7 @@ static int tcmur_max_minors = 256;
 //	    mountpoint
 //	    handler_prefix
 //	    tcmur_major_number
-//	    tcmur_max_minor
+//	    tcmur_max_minors
 
 int main(int argc, char * argv[])
 {
@@ -80,7 +80,7 @@ int main(int argc, char * argv[])
     DO_OR_WARN(fuse_tree_exit());
 
     /* -EBUSY if handler(s) still loaded */
-    DO_OR_DIE(libtcmur_exit());
+    DO_OR_WARN(libtcmur_exit());
 
     return 0;
 }

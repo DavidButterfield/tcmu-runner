@@ -23,12 +23,12 @@
 #include <stddef.h>
 #include <unistd.h>
 #include <stdlib.h>
-#include <stdio.h>
-#include <string.h>
 #include <signal.h>
 
-#include "fuse_tree.h"
 #include "sys_impl.h"
+#include "fuse_tree.h"
+
+#include <string.h>	    /* include  after sys_impl.h */
 
 #define FUSE_USE_VERSION 26
 #define _FILE_OFFSET_BITS 64	/* fuse seems to want this even on 64-bit */
@@ -46,26 +46,9 @@
 #define trace_getattr(fa...)	//  sys_trace(fa)	/* from fuse */
 #define trace_lookup(fa...)	//  sys_trace(fa)
 
-typedef struct fuse_node {
-    volatile int			refs;	    /* hold count */
-    struct fuse_node		      * parent;	    /* root's parent is NULL */
-    struct fuse_node		      * sibling;    /* null terminated list */
-    struct fuse_node		      * child;	    /* first child */
-    const struct fuse_node_ops	      *	fops;	    /* I/O for this fnode */
-    uintptr_t				data;	    /* client private */
-    time_t				i_atime;
-    time_t				i_mtime;
-    time_t				i_ctime;
-    size_t				i_size;
-    unsigned long			i_blksize;
-    unsigned long			i_rdev;
-    mode_t				i_mode;
-    unsigned char			namelen;    /* not counting '\0' */
-    char				name[1];    /* KEEP LAST */
-} * fuse_node_t;
-
 /* Open nodes store a pointer to the fnode in fuse_file_info->fh */
-#define FI_FNODE(ffi)			((fuse_node_t)(ffi)->fh)
+#define FI_FILE(fi)			((struct file *)(fi)->fh)
+#define FI_FNODE(fi)			(FI_FILE(fi)->inode->pde)
 
 #define foreach_child_node(parent, fnode) \
     for ((fnode) = (parent)->child; fnode; fnode = fnode->sibling)
@@ -76,7 +59,8 @@ static struct fuse_tree_ctx {
     sys_mutex_t				lock;
 } * CTX;
 
-#define tree_lock()		sys_mutex_lock(&CTX->lock)
+#define tree_lock()		do { assert(CTX); \
+				     sys_mutex_lock(&CTX->lock); } while (0)
 #define tree_unlock()		sys_mutex_unlock(&CTX->lock)
 #define assert_tree_locked()	sys_mutex_is_locked(&CTX->lock)
 
@@ -86,15 +70,15 @@ static struct fuse_tree_ctx {
 static void
 fnode_check(struct fuse_node const * fnode)
 {
-    assert_gt(fnode->refs, 0);
+    assert_ge(atomic_get(&fnode->inode->i_count), 1);
     assert_eq(fnode->namelen, strlen(fnode->name));
     assert_eq(strchr(fnode->name, '/'), NULL, "'%s'", fnode->name);
     assert_eq(!!fnode->parent, fnode != CTX->fuse_node_root);
-    assert_imply(!!fnode->child, S_ISDIR(fnode->i_mode));
+    assert_imply(!!fnode->child, S_ISDIR(fnode->inode->i_mode));
     assert_imply(fnode == CTX->fuse_node_root, !fnode->sibling);
-    assert(S_ISREG(fnode->i_mode) || S_ISDIR(fnode->i_mode)
-					 || S_ISBLK(fnode->i_mode),
-	   "fnode[%s]->mode=0%2o", fnode->name, fnode->i_mode);
+    assert(S_ISREG(fnode->inode->i_mode) || S_ISDIR(fnode->inode->i_mode)
+					 || S_ISBLK(fnode->inode->i_mode),
+	   "fnode[%s]->mode=0%2o", fnode->name, fnode->inode->i_mode);
 }
 
 /* Return the number of direct child nodes of fnode */
@@ -102,7 +86,7 @@ static inline unsigned int
 fnode_nchild(struct fuse_node const * fnode)
 {
     fnode_check(fnode);
-    bool isdir = S_ISDIR(fnode->i_mode);
+    bool isdir = S_ISDIR(fnode->inode->i_mode);
     unsigned int count = 0;
     foreach_child_node(fnode, fnode)
 	++count;
@@ -110,13 +94,20 @@ fnode_nchild(struct fuse_node const * fnode)
     return count;
 }
 
+static void
+_fnode_destructor(struct inode * inode)
+{
+    sys_mem_free(inode->pde);
+    sys_mem_free(inode);
+}
+
 /* Create a new fnode that can be added to the tree */
 static fuse_node_t
 _fnode_create(const char * name, mode_t mode,
-	       const struct fuse_node_ops * fops, uintptr_t data)
+	       const struct file_operations * fops, void * data)
 {
     size_t namelen;
-    assert_ne(name, NULL);
+    assert(name);
     assert_ne(*name, '\0');
     assert_eq(strchr(name, '/'), NULL, "'%s'", name);
     namelen = strlen(name);
@@ -127,61 +118,51 @@ _fnode_create(const char * name, mode_t mode,
 	memcpy(fnode->name, name, namelen);
 	assert_le(namelen, UCHAR_MAX);
 	fnode->namelen = (unsigned char)namelen;
-	fnode->fops = fops;
+	fnode->proc_fops = fops;
 	fnode->data = data;
-	fnode->i_mode = mode;
-	fnode->i_atime = fnode->i_mtime = fnode->i_ctime = time(NULL);
+	fnode->inode = sys_mem_zalloc(sizeof(*fnode->inode));
+	init_inode(fnode->inode, I_TYPE_PROC, mode, 0, 0, -1);
+	fnode->inode->pde = fnode;
+	fnode->inode->UMC_destructor = _fnode_destructor;
     }
 
     return fnode;
 }
 
-/* Free an fnode after it has been removed from the tree */
-static error_t
-_fnode_destroy(fuse_node_t fnode)
-{
-    assert_eq(fnode->child, NULL);	/* checked by caller */
-    sys_mem_free(fnode);
-    return 0;
-}
-
 static inline void
 node_hold(fuse_node_t fnode)
 {
-    fnode->refs++;
+    _iget(fnode->inode);
 }
 
 static inline void
 node_drop(fuse_node_t fnode)
 {
-    if (!--fnode->refs)
-	_fnode_destroy(fnode);
+    iput(fnode->inode);
 }
 
 static inline void
 assert_node_held(fuse_node_t fnode)
 {
-    assert_ge(fnode->refs, 2);
+    assert_ge(atomic_get(&fnode->inode->i_count), 2);
 }
 
 /* Add the fnode as a direct child of the parent fnode */
 static fuse_node_t
 fnode_add(fuse_node_t fnode, fuse_node_t parent)
 {
-    assert_ne(parent, NULL);
-    assert(S_ISDIR(parent->i_mode));
+    assert(parent);
+    assert(S_ISDIR(parent->inode->i_mode));
     assert_tree_locked();
 
-    node_hold(fnode);
-
     fnode->parent = parent;
-    fnode->sibling = fnode->parent->child;
+    fnode->sibling = parent->child;
     parent->child = fnode;
-    parent->i_size++;
+    parent->inode->i_size++;
     fuse_node_update_mtime(parent);
 
     trace_app("created %sfnode %s under %s",
-	    S_ISDIR(fnode->i_mode)?"DIRECTORY ":"", fnode->name, parent->name);
+	    S_ISDIR(fnode->inode->i_mode)?"DIRECTORY ":"", fnode->name, parent->name);
     fnode_check(fnode);
     return fnode;
 }
@@ -192,11 +173,11 @@ fnode_remove(fuse_node_t fnode, fuse_node_t parent)
 {
     trace_app("%s/%s", parent->name, fnode->name);
     assert_tree_locked();
-    assert(S_ISDIR(parent->i_mode));
+    assert(S_ISDIR(parent->inode->i_mode));
     assert_eq(fnode->child, NULL);
     assert_eq(fnode->parent, parent);
 
-    if (fnode->refs > 1)
+    if (atomic_get(&fnode->inode->i_count) > 1)
 	return -EBUSY;			/* fnode is open by someone */
 
     fuse_node_t * nodep;
@@ -206,8 +187,11 @@ fnode_remove(fuse_node_t fnode, fuse_node_t parent)
 	    continue;
 
 	*nodep = (*nodep)->sibling;	/* remove from list */
-	parent->i_size--;
+	parent->inode->i_size--;
 	fuse_node_update_mtime(parent);
+
+	trace_app("removed %sfnode %s under %s",
+		S_ISDIR(fnode->inode->i_mode)?"DIRECTORY ":"", fnode->name, parent->name);
 
 	node_drop(fnode);
 	return 0;
@@ -230,8 +214,10 @@ static fuse_node_t fnode_lookup(fuse_node_t fnode_root, const char * path);
  */
 fuse_node_t
 fuse_node_add(const char * name, fuse_node_t parent, mode_t mode,
-		const struct fuse_node_ops * fops, uintptr_t data)
+		const struct file_operations * fops, void * data)
 {
+    verify(CTX, "fuse_node_add called before fuse_tree_init");
+
     if (!parent)
 	parent = CTX->fuse_node_root;
 
@@ -243,16 +229,21 @@ fuse_node_add(const char * name, fuse_node_t parent, mode_t mode,
 
     fuse_node_t fnode = fnode_lookup(parent, name);
     if (fnode) {
-	sys_warning("attempt to create %s/%s which already exists",
-		    parent->name, name);
+	/* Node already exists: if directory, just return it */
+	if (!S_ISDIR(mode) || !S_ISDIR(fnode->inode->i_mode)) {
+	    /* Not a directory, fail */
+	    sys_warning("attempt to create %s/%s which already exists",
+			parent->name, name);
+	    fnode = NULL;
+	}
 	tree_unlock();
-	return fnode;	    //XXX but no refcount
+	return fnode;
     }
 
     fnode = _fnode_create(name, mode, fops, data);
     if (fnode) {
 	if (S_ISBLK(mode))
-	    fnode->i_blksize = 512;
+	    fnode->inode->i_blkbits = 9;    /* default 512-byte blocks */
 	fnode_add(fnode, parent);
     } else
 	sys_warning("failed to create %sfnode %s under %s",
@@ -279,10 +270,9 @@ fuse_node_remove(const char * name, fuse_node_t parent)
     if (fnode->child) {
 	sys_warning("fnode[%s] still has %d child(ren) e.g. '%s'",
 	    fnode->name, fnode_nchild(fnode), fnode->child->name);
-	return -ENOTEMPTY;	/* can't remove a DIR with children */
-    }
-
-    err = fnode_remove(fnode, parent);
+	err = -ENOTEMPTY;	/* can't remove a DIR with children */
+    } else
+	err = fnode_remove(fnode, parent);
 
     tree_unlock();
     return err;
@@ -307,41 +297,54 @@ fuse_tree_rmdir(const char * name, fuse_node_t parent)
 void
 fuse_node_update_mode(fuse_node_t fnode, mode_t mode)
 {
-    fnode->i_mode = (mode_t)((fnode->i_mode & ~0777u) | (mode & 0777u));
+    trace_app("%s", fnode->name);
+    fnode->inode->i_mode = (mode_t)((fnode->inode->i_mode & ~0777u) | (mode & 0777u));
 }
 
 /* Update the fuse_node's size */
 void
 fuse_node_update_size(fuse_node_t fnode, size_t size)
 {
-    fnode->i_size = size;
+    trace_app("%s size %ld-->%ld", fnode->name, fnode->inode->i_size, size);
+    fnode->inode->i_size = (off_t)size;
 }
+
+#ifndef ilog2
+#define ilog2(v)    ((v) ? 63 - __builtin_clzl((uint64_t)(v)) : -1)
+#endif
 
 /* Update the fuse_node's block size */
 void
 fuse_node_update_block_size(fuse_node_t fnode, size_t size)
 {
-    fnode->i_blksize = size;
+    int blkbits = ilog2(size);
+    assert(size);
+    assert_ge(blkbits, 0);
+    assert_eq(size, 1ul << blkbits, "not a power of two");
+    trace_app("%s i_blkbits %d-->%d", fnode->name, fnode->inode->i_blkbits, blkbits);
+    fnode->inode->i_blkbits = (unsigned int)blkbits;
 }
 
 /* Update the fuse_node's modification time to the present */
 void
 fuse_node_update_mtime(fuse_node_t fnode)
 {
-    fnode->i_mtime = time(NULL);
+    fnode->inode->i_mtime = time(NULL);
+    trace_app("%s", fnode->name);
 }
 
 /* Set the fuse_node's rdev */
 void
 fuse_node_update_rdev(fuse_node_t fnode, dev_t rdev)
 {
-    fnode->i_rdev = rdev;
+    fnode->inode->i_rdev = rdev;
+    trace_app("%s", fnode->name);
 }
 
 /******************************************************************************/
 /*** These functions operate on one particular fnode in the tree ***/
 
-uintptr_t
+void *
 fuse_node_data_get(fuse_node_t fnode)
 {
     return fnode->data;
@@ -351,26 +354,26 @@ fuse_node_data_get(fuse_node_t fnode)
 static error_t
 fnode_getattr(fuse_node_t fnode, struct stat * st)
 {
-    st->st_mode = fnode->i_mode;
+    st->st_mode = fnode->inode->i_mode;
 #if 1	//XXX make ISBLK appear as IFREG through fuse
     /* Trouble is that if we make the fnode appear as a block device to users
      * of the fuse mount, fuse additionally assumes that to mean to let the
      * kernel interpret the dev_t as referring to a kernel major/minor, instead
      * of letting our handlers interpret them.
      */
-    if (S_ISBLK(fnode->i_mode))
-	st->st_mode = S_IFREG | (fnode->i_mode & 0777);
+    if (S_ISBLK(fnode->inode->i_mode))
+	st->st_mode = S_IFREG | (fnode->inode->i_mode & 0777);
 #endif
 
     st->st_nlink = 1u + fnode_nchild(fnode);   /* assume no . or .. */
     st->st_uid = geteuid();
     st->st_gid = getegid();
-    st->st_size = (ssize_t)fnode->i_size;
-    st->st_atime = fnode->i_atime;
-    st->st_mtime = fnode->i_mtime;
-    st->st_ctime = fnode->i_ctime;
-    st->st_rdev = fnode->i_rdev;
-    st->st_blksize = (long)fnode->i_blksize;
+    st->st_size = (ssize_t)fnode->inode->i_size;
+    st->st_atime = fnode->inode->i_atime;
+    st->st_mtime = fnode->inode->i_mtime;
+    st->st_ctime = fnode->inode->i_ctime;
+    st->st_rdev = fnode->inode->i_rdev;
+    st->st_blksize = 1L << fnode->inode->i_blkbits;
     return 0;
 }
 
@@ -379,8 +382,8 @@ fnode_getattr(fuse_node_t fnode, struct stat * st)
 static error_t
 fnode_readdir(fuse_node_t fnode, void * buf, fuse_fill_dir_t filler, off_t ofs)
 {
-    assert(S_ISDIR(fnode->i_mode));
-    fnode->i_atime = time(NULL);
+    assert(S_ISDIR(fnode->inode->i_mode));
+    fnode->inode->i_atime = time(NULL);
     off_t next_idx = ofs;
     foreach_child_node(fnode, fnode) {
 	fnode_check(fnode);
@@ -401,10 +404,10 @@ fnode_open(struct fuse_file_info * fi)
 {
     error_t err = 0;
     fuse_node_t fnode = FI_FNODE(fi);
-    assert_ne(fnode, NULL);
+    assert(fnode);
 
-    if (fnode->fops && fnode->fops->open)
-	err = fnode->fops->open(fnode, fnode->data);
+    if (fnode->proc_fops && fnode->proc_fops->open)
+	err = fnode->proc_fops->open(file_inode(FI_FILE(fi)), FI_FILE(fi));
 
     return err;
 }
@@ -415,10 +418,10 @@ fnode_release(struct fuse_file_info * fi)
 {
     error_t err = 0;
     fuse_node_t fnode = FI_FNODE(fi);
-    assert_ne(fnode, NULL);
+    assert(fnode);
 
-    if (fnode->fops && fnode->fops->release)
-	err = fnode->fops->release(fnode, fnode->data);
+    if (fnode->proc_fops && fnode->proc_fops->release)
+	err = fnode->proc_fops->release(file_inode(FI_FILE(fi)), FI_FILE(fi));
 
     return err;
 }
@@ -430,16 +433,16 @@ static ssize_t
 fnode_read(struct fuse_file_info * fi, char * buf, size_t size, off_t ofs)
 {
     fuse_node_t fnode = FI_FNODE(fi);
-    assert_ne(fnode, NULL);
-    if (!fnode->fops || !fnode->fops->read)
+    assert(fnode);
+    if (!fnode->proc_fops || !fnode->proc_fops->read)
 	return -EINVAL;
 
-    ssize_t bytes_read = fnode->fops->read(fnode->data, buf, size, ofs);
+    ssize_t bytes_read = fnode->proc_fops->read(FI_FILE(fi), buf, size, &ofs);
     if (bytes_read < 0)
-	sys_warning("fnode[%s]->fops->read(bytes=%ld @ ofs=%ld got %ld",
+	sys_warning("fnode[%s]->proc_fops->read(bytes=%ld @ ofs=%ld got %ld\n",
 		    fnode->name, size, ofs, bytes_read);
     else
-	fnode->i_atime = time(NULL);
+	fnode->inode->i_atime = time(NULL);
 
     return bytes_read;
 }
@@ -451,16 +454,16 @@ static ssize_t
 fnode_write(struct fuse_file_info * fi, const char * buf, size_t size, off_t ofs)
 {
     fuse_node_t fnode = FI_FNODE(fi);
-    assert_ne(fnode, NULL);
-    if (!fnode->fops || !fnode->fops->write)
+    assert(fnode);
+    if (!fnode->proc_fops || !fnode->proc_fops->write)
 	return -EINVAL;
 
-    ssize_t bytes_written = fnode->fops->write(fnode->data, buf, size, ofs);
+    ssize_t bytes_written = fnode->proc_fops->write(FI_FILE(fi), buf, size, &ofs);
     if (bytes_written != (ssize_t)size)
-	sys_warning("fnode[%s]->fops->write(bytes=%ld @ ofs=%ld got %ld",
+	sys_warning("fnode[%s]->proc_fops->write(bytes=%ld @ ofs=%ld got %ld\n",
 		    fnode->name, size, ofs, bytes_written);
     else
-	fnode->i_mtime = time(NULL);
+	fnode->inode->i_mtime = time(NULL);
 
     return bytes_written;
 }
@@ -470,15 +473,14 @@ static error_t
 fnode_fsync(struct fuse_file_info * fi, int datasync)
 {
     fuse_node_t fnode = FI_FNODE(fi);
-    assert_ne(fnode, NULL);
-    if (!fnode->fops || !fnode->fops->fsync)
+    assert(fnode);
+    if (!fnode->proc_fops || !fnode->proc_fops->fsync)
 	return 0;	    /* right? */
 
-    error_t err = fnode->fops->fsync(fnode->data, datasync);
-    if (err)
-	sys_warning("fnode[%s]->fops->fsync got %d", fnode->name, err);
-    else
-	fnode->i_mtime = time(NULL);
+    error_t err = fnode->proc_fops->fsync(FI_FILE(fi), datasync);
+    if (!err)
+	fnode->inode->i_mtime = time(NULL);
+    WARN_ONCE(err, "fnode[%s]->proc_fops->fsync got %d\n", fnode->name, err);
 
     return err;
 }
@@ -497,8 +499,8 @@ fnode_lookup(fuse_node_t fnode_root, const char * path)
     fuse_node_t fnode;
     trace_lookup("%s", path);
     fnode_check(fnode_root);
-    assert(S_ISDIR(fnode_root->i_mode),"%s has mode 0%02o",
-		    fnode_root->name, fnode_root->i_mode);
+    assert(S_ISDIR(fnode_root->inode->i_mode),"%s has mode 0%02o",
+		    fnode_root->name, fnode_root->inode->i_mode);
     assert_tree_locked();
 
     while (*path == '/')
@@ -548,6 +550,7 @@ fuse_node_lookupat(fuse_node_t fnode_root, const char * path)
 fuse_node_t
 fuse_node_lookup(const char * path)
 {
+    verify(CTX, "fuse_node_lookup called before fuse_tree_init");
     return fuse_node_lookupat(CTX->fuse_node_root, path);
 }
 
@@ -562,12 +565,12 @@ _tree_fmt(fuse_node_t fnode_root, int level)
 	return NULL;
 
     ret = sys_asprintf(&str,
-	    "%*snode@%p={name='%s' mode=0%o%s size=%ld refs=%d}\n", level*4, "",
-	    fnode, fnode->name, fnode->i_mode,
-		S_ISDIR(fnode->i_mode) ? " (DIR)" :
-		S_ISBLK(fnode->i_mode) ? " (BLK)" :
-		S_ISREG(fnode->i_mode) ? " (REG)" : "",
-	    fnode->i_size, fnode->refs);
+	    "%*snode@%p={name='%s' parent@%p mode=0%o%s size=%ld refs=%d}\n", level*4, "",
+	    fnode, fnode->name, fnode->parent, fnode->inode->i_mode,
+		S_ISDIR(fnode->inode->i_mode) ? " (DIR)" :
+		S_ISBLK(fnode->inode->i_mode) ? " (BLK)" :
+		S_ISREG(fnode->inode->i_mode) ? " (REG)" : "",
+	    fnode->inode->i_size, atomic_get(&fnode->inode->i_count));
     if (ret < 0)
 	return NULL;
 
@@ -581,9 +584,13 @@ char *
 fuse_tree_fmt(void)
 {
     char * str;
-    fuse_node_t fnode_root = CTX->fuse_node_root;
+    fuse_node_t fnode_root;
+    if (!CTX)
+	return NULL;
+
+    fnode_root = CTX->fuse_node_root;
     if (!fnode_root)
-	return sys_mem_zalloc(1);	/* empty string */
+	return NULL;
 
     tree_lock();
     str = _tree_fmt(fnode_root, 0);
@@ -596,11 +603,14 @@ static void __attribute__((__unused__))
 tree_dump(void)
 {
     char * str;
-    fuse_node_t fnode_root = CTX->fuse_node_root;
-    if (fnode_root) {
-	str = _tree_fmt(fnode_root, 0);
-	fprintf(stderr, "%s", str);
-	sys_mem_free(str);
+    fuse_node_t fnode_root;
+    if (CTX) {
+	fnode_root = CTX->fuse_node_root;
+	if (fnode_root) {
+	    str = _tree_fmt(fnode_root, 0);
+	    fprintf(stderr, "%s", str);
+	    sys_mem_free(str);
+	}
     }
 }
 
@@ -632,7 +642,7 @@ op_fuse_readdir(const char * path, void * buf,
 
     fuse_node_t fnode = fnode_lookup(CTX->fuse_node_root, path);
     if (fnode) {
-	if (!S_ISDIR(fnode->i_mode))
+	if (!S_ISDIR(fnode->inode->i_mode))
 	    err = -ENOTDIR;
 	else
 	    err = fnode_readdir(fnode, buf, filler, ofs);
@@ -652,17 +662,21 @@ op_fuse_open(const char * path, struct fuse_file_info * fi)
 
     fuse_node_t fnode = fnode_lookup(CTX->fuse_node_root, path);
     if (fnode) {
-	if (S_ISDIR(fnode->i_mode)) {
+	if (S_ISDIR(fnode->inode->i_mode)) {
 	    tree_unlock();
 	    err = -EISDIR;
 	} else {
+	    struct file * file;
 	    node_hold(fnode);
 	    tree_unlock();
-	    fi->fh = (uintptr_t)fnode;	/* stash fnode pointer in fuse info */
+	    file = sys_mem_zalloc(sizeof(*file));
+	    file->inode = fnode->inode;
+	    fi->fh = (uintptr_t)file;	/* stash file pointer in fuse info */
 	    err = fnode_open(fi);
 	    if (err) {
-		sys_warning("fnode[%s]->fops->open returned %d",
+		sys_warning("fnode[%s]->proc_fops->open returned %d",
 				fnode->name, err);
+		sys_mem_free(file);
 		fi->fh = (uintptr_t)NULL;
 		node_drop(fnode);
 	    }
@@ -671,7 +685,7 @@ op_fuse_open(const char * path, struct fuse_file_info * fi)
 	tree_unlock();
     }
 
-    if (!err && !S_ISBLK(fnode->i_mode)) {
+    if (!err && !S_ISBLK(fnode->inode->i_mode)) {
 	fi->nonseekable = true;
 	fi->direct_io = true;
     }
@@ -691,19 +705,18 @@ op_fuse_release(const char * path, struct fuse_file_info * fi)
 	assert_eq(fnode, ({ fuse_node_t foo = fuse_node_lookup(path); foo; }));
 
     if (fnode) {
-	if (!S_ISDIR(fnode->i_mode)) {
+	if (!S_ISDIR(fnode->inode->i_mode)) {
 	    err = fnode_release(fi);
 	    if (err)
-		sys_warning("fnode[%s]->fops->release got %d",
+		sys_warning("fnode[%s]->proc_fops->release got %d",
 				    fnode->name, err);
 	    else {
 		node_drop(fnode);
+		sys_mem_free((void *)fi->fh);
+		fi->fh = (uintptr_t)NULL;
 	    }
 	}
     }
-
-    if (!err)
-	fi->fh = (uintptr_t)NULL;
 
     return err;
 }
@@ -723,13 +736,13 @@ op_fuse_read(const char * path, char * buf, size_t size, off_t ofs, struct fuse_
 
     if (fnode) {
 	assert_node_held(fnode);
-	if (S_ISDIR(fnode->i_mode))
+	if (S_ISDIR(fnode->inode->i_mode))
 	    ret = -EISDIR;
 	else
 	    ret = fnode_read(fi, buf, size, ofs);
 
 	if (ret >= 0)
-	    fnode->i_atime = time(NULL);
+	    fnode->inode->i_atime = time(NULL);
     }
 
     trace_fs("READ %s REPLY len=%"PRId64, path, ret);
@@ -749,13 +762,13 @@ op_fuse_write(const char * path, const char * buf, size_t size, off_t ofs, struc
 
     if (fnode) {
 	assert_node_held(fnode);
-	if (S_ISDIR(fnode->i_mode))
+	if (S_ISDIR(fnode->inode->i_mode))
 	    ret = -EISDIR;
 	else
 	    ret = fnode_write(fi, buf, size, ofs);
 
 	if (ret >= 0)
-	    fnode->i_mtime = time(NULL);
+	    fnode->inode->i_mtime = time(NULL);
     }
 
     trace_fs("WRITE %s REPLY len=%"PRId64, path, ret);
@@ -775,7 +788,7 @@ op_fuse_fsync(const char * path, int datasync, struct fuse_file_info * fi)
 
     if (fnode) {
 	assert_node_held(fnode);
-	if (S_ISDIR(fnode->i_mode))
+	if (S_ISDIR(fnode->inode->i_mode))
 	    err = -EISDIR;
 	else
 	    err = fnode_fsync(fi, datasync);
@@ -803,7 +816,7 @@ error_t
 fuse_tree_init(const char * mountpoint)
 {
     size_t namesize;
-    assert_ne(mountpoint, NULL);
+    assert(mountpoint);
 
     if (*mountpoint != '/')
 	return -EINVAL;
@@ -814,13 +827,13 @@ fuse_tree_init(const char * mountpoint)
 
     assert_eq(CTX, NULL);
     CTX = sys_mem_zalloc(sizeof(*CTX));
+    sys_mutex_init(&CTX->lock);
     namesize = 1 + strlen(mountpoint);
     CTX->mountpoint = sys_mem_alloc(namesize);
     memcpy(CTX->mountpoint, mountpoint, namesize);
 
     /* Create the root fnode that overlays the mount point */
     CTX->fuse_node_root = _fnode_create(rootname, S_IFDIR|0555, NULL, 0);
-    node_hold(CTX->fuse_node_root);
 
     fnode_check(CTX->fuse_node_root);
     return 0;
@@ -829,10 +842,13 @@ fuse_tree_init(const char * mountpoint)
 error_t
 fuse_tree_exit(void)
 {
-    fuse_node_t root = CTX->fuse_node_root;
-    assert_ne(root, NULL);
-    assert_ne(CTX, NULL);
-    assert_ne(CTX->mountpoint, NULL);
+    fuse_node_t root;
+    if (!CTX)
+	return -EINVAL;
+
+    root = CTX->fuse_node_root;
+    assert(root);
+    assert(CTX->mountpoint);
 
     if (fnode_nchild(root)) {
 	char * str;
@@ -844,7 +860,7 @@ fuse_tree_exit(void)
 	return -EBUSY;
     }
 
-    _fnode_destroy(root);
+    node_drop(root);
     sys_mem_free(CTX->mountpoint);
     sys_mem_free(CTX);
     CTX = NULL;
@@ -859,7 +875,7 @@ fuse_loop_run(void * unused)
 {
     error_t err;
     assert_eq(unused, NULL);
-    assert_ne(CTX, NULL);
+    assert(CTX);
 
     /* Create the mount point for the fuse filesystem */
     {

@@ -1,4 +1,4 @@
-/* fuse_tcmur.h -- translate fuse_node_ops into calls to tcmu-runner handlers
+/* fuse_tcmur.h -- translate file_operations into calls to tcmu-runner handlers
  *
  * Copyright 2019 David A. Butterfield
  *
@@ -21,11 +21,11 @@ extern error_t fuse_tcmur_exit(void);
  * then adds the tcmur control device, which allows libtcmur to be controlled
  * through commands written into a fuse filesystem node.
  *
- * The argument is the fuse_node_ops vector for tcmur devices subsequently
+ * The argument is the file_operations vector for tcmur devices subsequently
  * created using the "add" command.
  */
-struct fuse_node_ops;
-extern error_t fuse_tcmur_ctl_init(struct fuse_node_ops *);
+struct file_operations;
+extern error_t fuse_tcmur_ctl_init(struct file_operations *);
 extern error_t fuse_tcmur_ctl_exit(void);
 
 #endif /* FUSE_TCMUR_H */

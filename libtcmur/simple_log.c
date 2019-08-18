@@ -11,13 +11,14 @@
 #include <stdint.h>
 #include <errno.h>
 #include <limits.h>
-#include <string.h>
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <unistd.h>
 
-#include "libtcmur.h"	    /* must include before sys_impl.h */
-#include "sys_impl.h"	    /* must include before libtcmu_config.h */
+#include "sys_impl.h"	    /* include before libtcmu_config.h */
+#include "libtcmur.h"
+
+#include <string.h>	    /* include after sys_impl.h */
 
 #include "../libtcmu_log.h"
 #include "../libtcmu_config.h"

@@ -23,13 +23,13 @@
 #include <stddef.h>
 #include <unistd.h>
 #include <stdlib.h>
-#include <stdio.h>
-#include <string.h>
 #include <ctype.h>
 #include <dlfcn.h>
 
-#include "libtcmur.h"
 #include "sys_impl.h"
+#include "libtcmur.h"
+
+#include <string.h>	/* include after sys_impl.h */
 
 #define tcmu_io_trace_dev(dev, fmtargs...)  //  tcmu_dev_info(dev, "libtcmur: "fmtargs)
 
@@ -37,7 +37,7 @@
 #define STUB_WARN() do { \
     static int been_here = 0; \
     if (been_here++ < 2) \
-	sys_backtrace("CALLED STUB FUNCTION %s\n", __func__); \
+	do_backtrace("%s", __func__); \
 } while (0)
 
 /* Handlers may have code that calls these functions, even though that code
@@ -287,7 +287,7 @@ bool tcmu_dev_get_write_cache_enabled(struct tcmu_device *dev)
 	return dev->write_cache_enabled;
 }
 
-char *tcmu_dev_get_cfgstring(struct tcmu_device *dev)
+char * tcmu_dev_get_cfgstring(struct tcmu_device *dev)
 {
 	return dev->cfgstring;
 }
@@ -485,7 +485,7 @@ tcmur_device_add(int minor, const char * cfg)
 
     dev = sys_mem_zalloc(sizeof(*dev));
     dev->rhandler = handler_of_cfgstr(cfg);
-    assert_ne(dev->rhandler, 0);
+    assert(dev->rhandler);
 
     /* Advance over handler_name to the handler-specific cfg string */
     cfg = strchrnul(cfg+1, '/');
@@ -508,7 +508,7 @@ tcmur_device_add(int minor, const char * cfg)
     /* handler->open() might corrupt the config string using strtok() */
     memcpy(dev->cfgstring, dev->cfgstring_orig, sizeof(dev->cfgstring));
 
-#if 0	//XXX no tcmu_cfgfs_dev_get_*()
+#if 0	//XXXXX no tcmu_cfgfs_dev_get_*()
 	block_size = tcmu_cfgfs_dev_get_attr_int(dev, "hw_block_size");
 	if (block_size <= 0) {
 		tcmu_dev_err(dev, "Could not get hw_block_size\n");

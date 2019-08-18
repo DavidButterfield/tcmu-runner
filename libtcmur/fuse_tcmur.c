@@ -1,4 +1,4 @@
-/* fuse_tcmur.c -- translate fuse_node_ops into calls to tcmu-runner handlers
+/* fuse_tcmur.c -- translate file_operations into calls to tcmu-runner handlers
  *
  * Copyright 2019 David A. Butterfield
  *
@@ -6,7 +6,7 @@
  * General Public License, version 2.1 or any later version (LGPLv2.1 or
  * later), or the Apache License 2.0.
  *
- * The functions below translate fuse_node_ops into tcmur_*() calls, and
+ * The functions below translate file_operations into tcmur_*() calls, and
  * _STS_ replies into -errno.
  */
 #define _GNU_SOURCE
@@ -14,10 +14,10 @@
 #include <inttypes.h>
 #include <errno.h>
 
+#include "sys_impl.h"
 #include "libtcmur.h"
 #include "fuse_tree.h"
 #include "fuse_tcmur.h"
-#include "sys_impl.h"
 
 /***** Ferry an op from fuse to libtcmur and back *****/
 struct fuse_tcmur_op {
@@ -71,46 +71,50 @@ op_setup(struct fuse_tcmur_op * op, int minor, const void * buf, size_t iosize)
     cmd->done = io_done;
 }
 
-/***** Synchronous fuse_node_ops called from fuse_tree.c *****/
+/***** Synchronous file_operations called from fuse_tree.c *****/
 
 static ssize_t
-dev_read(uintptr_t minor_arg, void * buf, size_t iosize, off_t lofs)
+dev_read(struct file * file, void * buf, size_t iosize, off_t *lofsp)
 {
-    int minor = (int)minor_arg;
+    int minor = (int)(uintptr_t)file_pde_data(file);
     ssize_t err;
     struct fuse_tcmur_op op;
     memset(&op, 0, sizeof(op));
 
     op_setup(&op, minor, buf, iosize);
 
-    err = tcmur_read(minor, &op.cmd, op.cmd.iovec, op.cmd.iov_cnt, iosize, lofs);
+    err = tcmur_read(minor, &op.cmd, op.cmd.iovec, op.cmd.iov_cnt, iosize, *lofsp);
     if (err)
 	return err;
+
+    *lofsp += (off_t)iosize;		    //XXX needed?
 
     return io_wait(&op, iosize);
 }
 
 static ssize_t
-dev_write(uintptr_t minor_arg, const char * buf, size_t iosize, off_t lofs)
+dev_write(struct file * file, const char * buf, size_t iosize, off_t *lofsp)
 {
-    int minor = (int)minor_arg;
+    int minor = (int)(uintptr_t)file_pde_data(file);
     ssize_t err;
     struct fuse_tcmur_op op;
     memset(&op, 0, sizeof(op));
 
     op_setup(&op, minor, buf, iosize);
 
-    err = tcmur_write(minor, &op.cmd, op.cmd.iovec, op.cmd.iov_cnt, iosize, lofs);
+    err = tcmur_write(minor, &op.cmd, op.cmd.iovec, op.cmd.iov_cnt, iosize, *lofsp);
     if (err)
 	return err;
+
+    *lofsp += (off_t)iosize;		    //XXX needed?
 
     return io_wait(&op, iosize);
 }
 
 static error_t
-dev_sync(uintptr_t minor_arg, int datasync)
+dev_sync(struct file * file, int datasync)
 {
-    int minor = (int)minor_arg;
+    int minor = (int)(uintptr_t)file_pde_data(file);
     error_t err;
     struct fuse_tcmur_op op;
     memset(&op, 0, sizeof(op));
@@ -125,7 +129,7 @@ dev_sync(uintptr_t minor_arg, int datasync)
 }
 
 /* fuse ops for nodes representing tcmu-runner handler devices */
-static struct fuse_node_ops dev_fops = {
+static struct file_operations dev_fops = {
     .read = dev_read,
     .write = dev_write,
     .fsync = dev_sync,

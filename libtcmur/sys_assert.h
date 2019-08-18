@@ -18,18 +18,21 @@
 
 #define _assfail()  abort()
 
-#define sys_backtrace(fmtargs...) _sys_backtrace(""fmtargs)
-#define _sys_backtrace(fmt, args...) do { \
+#define DO_STACKTRACE true
+
+#define do_backtrace(fmtargs...) _do_backtrace(" "fmtargs)
+#define _do_backtrace(fmt, args...) do { \
     if (RUNNING_ON_VALGRIND) { \
 	fflush(stderr); \
 	VALGRIND_PRINTF_BACKTRACE(fmt, ##args); \
-    } else { \
+    } else if (DO_STACKTRACE) { \
 	void *bt[3]; \
 	int nframe = backtrace(bt, sizeof(bt) / sizeof((bt)[0])); \
 	sys_error(fmt, ##args); \
 	fflush(stderr); \
 	backtrace_symbols_fd(bt, nframe, fileno(stderr)); \
-    } \
+    } else \
+	sys_error(fmt, ##args); \
 } while (0)
 
 // Avoid expect(x) because DRBD has its own version; use expect_ne(x, 0) instead
@@ -75,7 +78,7 @@
 #define _expect(cond, fmt, args...) ({ \
     intptr_t _c = (intptr_t)(cond);   /* evaluate cond exactly once */ \
     if (!(_c)) \
-	sys_backtrace("CONDITION FAILED: %s\n"fmt, #cond, ##args); \
+	do_backtrace("CONDITION FAILED: %s\n"fmt, #cond, ##args); \
     _c;	/* return the full value of cond */ \
 })
 

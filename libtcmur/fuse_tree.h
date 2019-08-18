@@ -20,24 +20,27 @@
 #include <inttypes.h>
 #include <errno.h>
 
-typedef struct fuse_node * fuse_node_t;
-
-/* Application ops called by fuse_tree.c filesystem ops */
-struct fuse_node_ops {
-    int	    (* open)   (fuse_node_t, uintptr_t data);
-    int	    (* release)(fuse_node_t, uintptr_t data);
-    ssize_t (* read)   (uintptr_t data, void * buf, size_t len, off_t ofs);
-    ssize_t (* write)  (uintptr_t data, const char * buf, size_t, off_t);
-    int	    (* fsync)  (uintptr_t data, int datasync);
-};
+/* Some names in this structure are compatible with PDE member names */
+typedef struct fuse_node {
+    struct fuse_node		      * parent;	    /* root's parent is NULL */
+    struct fuse_node		      * sibling;    /* null terminated list */
+    struct fuse_node		      * child;	    /* first child */
+    const struct file_operations      *	proc_fops;  /* I/O for this fnode */
+    void			      *	data;	    /* client private */
+    struct inode		      * inode;
+    struct module		      * owner;
+    unsigned char			namelen;    /* not counting '\0' */
+    char				name[1];    /* KEEP LAST */
+} * fuse_node_t;
 
 /* Return a human-readable freeable string representing the fuse tree */
 extern char * fuse_tree_fmt(void);
 
 /* Add a node with the given name under the given parent node */
+struct file_operations;
 extern fuse_node_t fuse_node_add(
 		const char * name, fuse_node_t parent, mode_t,
-		const struct fuse_node_ops *, uintptr_t data);
+		const struct file_operations *, void * data);
 extern error_t fuse_node_remove(const char *name , fuse_node_t parent);
 
 extern fuse_node_t fuse_tree_mkdir(const char * name, fuse_node_t parent);
@@ -48,7 +51,7 @@ extern fuse_node_t fuse_node_lookup(const char * path);
 extern fuse_node_t fuse_node_lookupat(fuse_node_t fnode_root, const char *);
 
 /* Return the private data specified to fuse_node_add */
-extern uintptr_t fuse_node_data_get(fuse_node_t);
+extern void * fuse_node_data_get(fuse_node_t);
 
 /* Update the fuse_node's mode permissions */
 extern void fuse_node_update_mode(fuse_node_t, mode_t);
