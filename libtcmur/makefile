@@ -69,6 +69,8 @@ CFLAGS += $(WFLAGS_WARN) $(WFLAGS_INHIBIT)
 
 ###############################################################################
 
+CFLAGS += $(MY_CFLAGS) $(EXTRA_CFLAGS)
+
 CFLAGS += -g -I. -I.. -I../ccan -DTCMU_USERMODE
 LDFLAGS += -rdynamic
 LIBS += -lfuse -lpthread -ldl -lc
