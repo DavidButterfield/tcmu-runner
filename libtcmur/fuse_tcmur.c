@@ -14,16 +14,17 @@
 #include <inttypes.h>
 #include <errno.h>
 
-#include "sys_impl.h"
 #include "libtcmur.h"
 #include "fuse_tree.h"
 #include "fuse_tcmur.h"
+
+#define trace_ioerr(fmtargs...)	        nlprintk(fmtargs)
 
 /***** Ferry an op from fuse to libtcmur and back *****/
 struct fuse_tcmur_op {
     struct tcmur_cmd	    cmd;
     int			    minor;
-    struct sys_completion   complete;
+    struct completion	    complete;
     tcmur_status_t	    sts;
     struct iovec	    iov[1];	/* we get singleton bufs from fuse */
 };
@@ -35,18 +36,17 @@ static void
 io_done(struct tcmu_device * tcmu_dev, struct tcmur_cmd * cmd, tcmur_status_t sts)
 {
     struct fuse_tcmur_op * op = op_of_cmd(cmd);
-    if (sts) {
-	sys_trace("tcmur[%d] OP completes with sts=%d\n", op->minor, op->sts);
-    }
+    if (sts)
+	trace_ioerr("tcmur[%d] OP completes with sts=%d\n", op->minor, op->sts);
     op->sts = sts;
-    sys_complete(&op->complete);
+    complete(&op->complete);
 }
 
 /* Wait for io_done to be called, and translate status to errno */
 static ssize_t
 io_wait(struct fuse_tcmur_op * op, size_t success)
 {
-    sys_wait_for_completion(&op->complete);
+    wait_for_completion(&op->complete);
 
     /* Translate STS into -errno */
     if (op->sts != TCMU_STS_OK)
@@ -63,7 +63,7 @@ op_setup(struct fuse_tcmur_op * op, int minor, const void * buf, size_t iosize)
     op->iov[0].iov_base = _unconstify(buf);
     op->iov[0].iov_len = iosize;
     op->minor = minor;
-    sys_completion_init(&op->complete);
+    init_completion(&op->complete);
 
     struct tcmur_cmd * cmd = &op->cmd;
     cmd->iovec = op->iov;

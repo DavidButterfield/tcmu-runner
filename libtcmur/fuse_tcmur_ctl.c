@@ -28,12 +28,12 @@
 #include <ctype.h>
 #include <sys/stat.h>
 
-#include "sys_impl.h"
 #include "libtcmur.h"
 #include "fuse_tree.h"
 #include "fuse_tcmur.h"
+#include "sys_assert.h" /* include after tcmu-runner.h (libtcmur.h) */
 
-#include <string.h>	    /* include after sys_impl.h */
+#include <string.h>	/* include after sys_impl.h (libtcmur.h) */
 
 /* Interactive printf for responses to commands written to control node */
 #define iprintf(fmtargs...) (fprintf(stderr, fmtargs), fflush(stderr))
@@ -80,7 +80,6 @@ copyline(const char * buf, size_t size)
     char * str;	    /* pointer to copy to return */
     const char * q; /* last non-blank seen */
     const char * p;
-    int ret;
 
     /* Advance over initial spaces/tabs */
     while (size && ISblank(*buf))
@@ -97,8 +96,7 @@ copyline(const char * buf, size_t size)
     }
 
     /* Return string starts and ends with non-blank characters */
-    ret = sys_asprintf(&str, "%.*s", (int)(q-buf), buf);
-    verify_ge(ret, 0, "asprintf: %s", strerror(errno));
+    str = kasprintf(0, "%.*s", (int)(q-buf), buf);
 
     return str;
 }
@@ -299,7 +297,7 @@ ctl_write(struct file * unused, const char * buf, size_t iosize, off_t * lofsp)
 	else if (str_match(cmd_str, "dump")) {
 	    char * str = fuse_tree_fmt();
 	    iprintf("%s", str);
-	    sys_mem_free(str);
+	    vfree(str);
 	}
 
 	else if (*cmd_str == '\0') {
@@ -310,7 +308,7 @@ ctl_write(struct file * unused, const char * buf, size_t iosize, off_t * lofsp)
 	    iprintf("  ? %s\nTry 'help'\n", copy);
 	}
 
-	sys_mem_free(copy);
+	vfree(copy);
 
 	/* Advance the main buffer to the start of the next line */
 	while (size && *line && *line != '\n')
@@ -337,7 +335,7 @@ ctl_read(struct file * unused, void * buf, size_t iosize, off_t * lofsp)
 
     strncpy(buf, str + *lofsp, iosize);
 
-    sys_mem_free(str);
+    vfree(str);
     return ret;
 }
 
@@ -349,7 +347,7 @@ static struct file_operations ctl_fops = {
 error_t
 fuse_tcmur_ctl_init(struct file_operations * fops)
 {
-    assert_ne(fops, NULL);
+    assert(fops);
     assert_eq(fuse_tcmur_dev_fops, NULL);   /* double init */
 
     /* Thence go ops written to tcmur minors we "add" later */
@@ -358,8 +356,8 @@ fuse_tcmur_ctl_init(struct file_operations * fops)
     fnode_dev = fuse_node_lookup("/dev");
     fnode_mod = fuse_node_lookup("/sys/module");
 
-    assert_ne(fnode_dev, 0, "%s", fuse_tree_fmt());
-    assert_ne(fnode_mod, 0, "%s", fuse_tree_fmt());
+    assert(fnode_dev, "%s", fuse_tree_fmt());
+    assert(fnode_mod, "%s", fuse_tree_fmt());
 
     /* Make the tcmur control node to receive FS writes of commands */
     fuse_tree_mkdir("tcmur", fnode_mod);
@@ -372,7 +370,7 @@ error_t
 fuse_tcmur_ctl_exit(void)
 {
     error_t err;
-    assert_ne(fuse_tcmur_dev_fops, 0, "exit without init");
+    assert(fuse_tcmur_dev_fops, "exit without init");
 
     err = fuse_node_remove("tcmur", fnode_dev);
     if (err)

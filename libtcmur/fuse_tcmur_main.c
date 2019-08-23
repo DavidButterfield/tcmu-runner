@@ -14,7 +14,6 @@
 #include <stdbool.h>
 #include <errno.h>
 
-#include "sys_impl.h"
 #include "libtcmur.h"
 #include "fuse_tree.h"
 #include "fuse_tcmur.h"
@@ -23,18 +22,16 @@
 #define DO_OR_DIE(FN) \
 do { \
     error_t _err = (FN); \
-    if (_err) { \
-	sys_error("'%s' err=%d %s\n", \
+    if (_err) \
+	panic("'%s' err=%d %s\n", \
 		    #FN, _err, _err < 0 ? strerror(-_err) : ""); \
-	sys_abort(); \
-    } \
 } while (0)
 
 #define DO_OR_WARN(FN) \
 do { \
     error_t _err = (FN); \
     if (_err) { \
-	sys_warning("'%s' err=%d %s\n", \
+	pr_warning("'%s' err=%d %s\n", \
 		    #FN, _err, _err < 0 ? strerror(-_err) : ""); \
     } \
 } while (0)

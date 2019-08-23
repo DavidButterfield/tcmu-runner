@@ -3,10 +3,15 @@
 #CONFIG_BIO = 1		# define this to use BIO
 
 ifdef CONFIG_BIO
+
 CFLAGS += -DCONFIG_BIO -DUSE_UMC
 CFLAGS += -I ../../usermode_compat/src
 CFLAGS += -I ../../usermode_compat/src/arch/x86/include
 CFLAGS += -I ../../usermode_compat/src/include
+
+# For sys_service.h
+CFLAGS += -I ../../MTE/include
+
 endif
 
 CFLAGS += -DDEBUG
@@ -99,6 +104,7 @@ all:	fuse_tcmur
 else
 
 all:	libfusetree.a libtcmur.a
+	$(MAKE) -i cscope
 
 endif
 

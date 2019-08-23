@@ -10,38 +10,31 @@
  * expect() family issues warning when DEBUG defined, ignored otherwise
  * verify() family is checked and fatal in all builds
  * assert_static() is checked at compile-time
+ *
+ * Define sys_backtrace(fmt, args...) before including this file
  */
 #ifndef SYS_ASSERT_H
 #define SYS_ASSERT_H
+
+#ifndef sys_backtrace
+#error #define sys_backtrace(fmt, args...) before including sys_assert.h
+#endif
 
 #define assert_static(e) ;enum { _CONCAT(static_assert_, __COUNTER__) = 1/(!!(e)) }
 
 #define _assfail()  abort()
 
-#define DO_STACKTRACE true
-
-#define do_backtrace(fmtargs...) _do_backtrace(" "fmtargs)
-#define _do_backtrace(fmt, args...) do { \
-    if (RUNNING_ON_VALGRIND) { \
-	fflush(stderr); \
-	VALGRIND_PRINTF_BACKTRACE(fmt, ##args); \
-    } else if (DO_STACKTRACE) { \
-	void *bt[3]; \
-	int nframe = backtrace(bt, sizeof(bt) / sizeof((bt)[0])); \
-	sys_error(fmt, ##args); \
-	fflush(stderr); \
-	backtrace_symbols_fd(bt, nframe, fileno(stderr)); \
-    } else \
-	sys_error(fmt, ##args); \
-} while (0)
-
 // Avoid expect(x) because DRBD has its own version; use expect_ne(x, 0) instead
 #ifdef DEBUG
-#define expect_rel(x, op, y, fmtargs...) _expect_rel((x), op, (y), ""fmtargs)
-#define expect_imply(x, y, fmtargs...)	_expect_imply((x), (y), ""fmtargs)
+#define expect_rel(x, op, y, fmtargs...)    _expect_rel((x), op, (y), ""fmtargs)
+#define expect_imply(x, y, fmtargs...)	    _expect_imply((x), (y), ""fmtargs)
+#define expect_noerr(err, fmtargs...)	    _expect_noerr((err), ""fmtargs)
+#define expect_rc(rc, call, fmtargs...)	    _expect_rc((rc), call, ""fmtargs)
 #else
-#define expect_rel(x, op, y, fmtargs...) ( _USE(x), _USE(y) )
-#define expect_imply(x, y, fmtargs...)	( _USE(x), _USE(y) )
+#define expect_rel(x, op, y, fmtargs...)    ( _USE(x), _USE(y) )
+#define expect_imply(x, y, fmtargs...)	    ( _USE(x), _USE(y) )
+#define expect_noerr(err, fmtargs...)	    _USE(err)
+#define expect_rc(rc, call, fmtargs...)	    _USE(rc)
 #endif
 
 /* Enabled when -DDEBUG:  assert*(), expect*(), verify*(), _expect*() */
@@ -78,7 +71,7 @@
 #define _expect(cond, fmt, args...) ({ \
     intptr_t _c = (intptr_t)(cond);   /* evaluate cond exactly once */ \
     if (!(_c)) \
-	do_backtrace("CONDITION FAILED: %s\n"fmt, #cond, ##args); \
+	sys_backtrace("CONDITION FAILED: %s\n"fmt, #cond, ##args); \
     _c;	/* return the full value of cond */ \
 })
 
@@ -106,5 +99,19 @@
 	    #xx, (intptr_t)(x), (intptr_t)(x), \
 		 (intptr_t)(y), (intptr_t)(y), #yy, ##args); \
 })
+
+/* Expects (err == 0) -- works on kernel-style errnos and userland-style errnos */
+#define _expect_noerr(err, fmt, args...) \
+    _expect_eq((err), 0, "syscall error "fmt": errno=%d %s", \
+			    ##args, (int)err, strerror(err>0?err:-err))
+
+/* Expects (rc >= 0) -- works on kernel-style errnos and userland-style errnos */
+#define _expect_rc(rc, call, fmt, args...)					\
+    _expect_ge((rc), 0, "%s syscall: rc=%d err=%d %s "fmt,			\
+		    #call, (int)rc, (rc) == -1 ? errno : (int)-(rc),		\
+			   strerror((rc) == -1 ? errno : (int)-(rc)), ##args)
+
+#define verify_noerr(err, fmtargs...)	(_expect_noerr((err), ""fmtargs) ?: _assfail())
+#define verify_rc(rc, call, fmtargs...)	(_expect_rc((rc), call, ""fmtargs) ?: _assfail())
 
 #endif /* SYS_ASSERT_H */

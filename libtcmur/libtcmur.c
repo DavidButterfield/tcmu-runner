@@ -26,10 +26,10 @@
 #include <ctype.h>
 #include <dlfcn.h>
 
-#include "sys_impl.h"
 #include "libtcmur.h"
+#include "sys_assert.h" /* include after tcmu-runner.h (libtcmur.h) */
 
-#include <string.h>	/* include after sys_impl.h */
+#include <string.h>	/* include after sys_impl.h (libtcmur.h) */
 
 #define tcmu_io_trace_dev(dev, fmtargs...)  //  tcmu_dev_info(dev, "libtcmur: "fmtargs)
 
@@ -37,7 +37,7 @@
 #define STUB_WARN() do { \
     static int been_here = 0; \
     if (been_here++ < 2) \
-	do_backtrace("%s", __func__); \
+	sys_backtrace("UNEXPECTED CALL TO %s", __func__); \
 } while (0)
 
 /* Handlers may have code that calls these functions, even though that code
@@ -131,7 +131,6 @@ handler_of_cfgstr(const char * cfg)
     char * hname;
     const char * subtype = cfg;
     const char * p;
-    int ret;
 
     while (*subtype == '/')
 	subtype++;
@@ -139,11 +138,10 @@ handler_of_cfgstr(const char * cfg)
     while (isalnum(*p))
 	p++;
 
-    ret = sys_asprintf(&hname, "%.*s", (int)(p - subtype), subtype);
-    verify_ge(ret, 0, "asprintf: %s", strerror(errno));
+    hname = kasprintf(0, "%.*s", (int)(p - subtype), subtype);
 
     handler = tcmur_find_handler(hname);
-    sys_mem_free(hname);
+    vfree(hname);
     return handler;
 }
 
@@ -183,7 +181,7 @@ tcmur_check_config(const char * cfg)
 	tcmu_warn("handler %s failed check_config(%s) reason: %s\n",
 		    handler->name, cfg, reason?:"none");
 	if (reason)
-	    sys_mem_free(reason);
+	    vfree(reason);
     }
 
     return err;
@@ -483,7 +481,7 @@ tcmur_device_add(int minor, const char * cfg)
     //    knows how to tell if two cfgstrings refer to the same device.
     //	  (But we could still check for identical *strings* here)
 
-    dev = sys_mem_zalloc(sizeof(*dev));
+    dev = vzalloc(sizeof(*dev));
     dev->rhandler = handler_of_cfgstr(cfg);
     assert(dev->rhandler);
 
@@ -530,17 +528,17 @@ tcmur_device_add(int minor, const char * cfg)
 #else	//XXX
 
     if (!tcmu_dev_get_block_size(dev)) {
-	sys_notice("Using default block size=%d", 4096);
+	pr_notice("Using default block size=%d\n", 4096);
 	tcmu_dev_set_block_size(dev, 4096);		//XXX 4 KiB
     }
 
     if (!tcmu_dev_get_num_lbas(dev)) {
-	sys_notice("Using default nblocks=%d", 262144);
+	pr_notice("Using default nblocks=%d\n", 262144);
 	tcmu_dev_set_num_lbas(dev, 262144);		//XXX 1 GiB
     }
 
     if (!tcmu_dev_get_max_xfer_len(dev)) {
-	sys_notice("Using max I/O size=%d", 1024*1024);
+	pr_notice("Using max I/O size=%d\n", 1024*1024);
 	tcmu_dev_set_max_xfer_len(dev, 1024*1024);	//XXX 1 MiB
     }
 
@@ -556,7 +554,7 @@ tcmur_device_add(int minor, const char * cfg)
     return 0;
 
 fail_free:
-    sys_mem_free(dev);
+    vfree(dev);
     return err;
 }
 
@@ -575,7 +573,7 @@ tcmur_device_remove(int minor)
     if (dev->rhandler->close)
 	dev->rhandler->close(dev);
 
-    sys_mem_free(dev);
+    vfree(dev);
     return 0;
 }
 
@@ -609,9 +607,7 @@ tcmur_handler_load(const char * subtype)
 	return -ENOSPC;
     }
 
-    ret = sys_asprintf(&path, "%s%s.so", handler_prefix, subtype);
-    if (ret < 0)
-	return -errno;
+    path = kasprintf(0, "%s%s.so", handler_prefix, subtype);
 
     handle = dlopen(path, RTLD_NOW|RTLD_LOCAL);
     if (!handle) {
@@ -636,7 +632,7 @@ tcmur_handler_load(const char * subtype)
     }
 
 out_free:
-    sys_mem_free(path);
+    vfree(path);
     return ret;
 
 err_close:

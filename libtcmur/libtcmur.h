@@ -19,21 +19,26 @@
 #define LIBTCMUR_H
 #include <errno.h>
 
+#define __struct_tm_defined	/* inhibit struct_tm.h */
+#include "sys_impl.h"
+
 /* Include tcmu-runner.h without some things it includes */
 #define __TCMU_SCSI_DEFS	/* inhibit scsi_defs.h */
 #define __TCMU_ALUA_H		/* inhibit alua.h */
 #define __TCMU_SCSI_H		/* inhibit scsi.h */
-#define HAVE_ISBLANK		1
-#define HAVE_TYPEOF		1
-#ifdef LIST_HEAD
-#define CCAN_LIST_H
-#define list_node list_head
-#endif
 #undef max
 #undef min
 #undef ARRAY_SIZE
+#define HAVE_ISBLANK		1
+#define HAVE_TYPEOF		1
+#ifdef USE_UMC
+  #define list_node list_head
+  /* UMC provides these thiings */
+  #define _SYS_UIO_H
+  #define CCAN_LIST_H
+#endif
 #define ffs UNUSED_ffs
-#include "../tcmu-runner.h"
+  #include "../tcmu-runner.h"	/* include after sys_impl.h */
 #undef ffs
 
 #include "../version.h"

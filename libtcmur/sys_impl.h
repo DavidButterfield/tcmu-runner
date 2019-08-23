@@ -9,37 +9,12 @@
 #ifndef SYS_IMPL_H
 #define SYS_IMPL_H
 #define _GNU_SOURCE
-#define PATH_MAX 4096
 
 #if defined(USE_UMC)
 
-#include "usermode_lib.h"
-#define sys_string_concat_free	UMC_string_concat_free
-#define sys_system		system
-#define sys_notice		pr_notice
-#define sys_warning		pr_warning
-#define sys_error		pr_err
-#define sys_trace		nlprintk
-#define sys_vfprintf		vfprintf
-typedef struct mutex		sys_mutex_t;
-#define sys_mutex		mutex
-#define sys_mutex_init		mutex_init
-#define sys_mutex_lock		mutex_lock
-#define sys_mutex_unlock	mutex_unlock
-#define sys_mutex_is_locked	mutex_is_locked
-#define sys_completion		completion
-#define sys_complete		complete
-#define sys_wait_for_completion	wait_for_completion
-#define sys_completion_init	init_completion
+    #include "usermode_lib.h"
 
-#define do_backtrace(fmtargs...) \
-do { \
-    char * str; \
-    sys_asprintf(&str, fmtargs); \
-    sys_backtrace(str); \
-} while (0)
-
-#else	/* !USE_UMC (to the end of this file) */
+#else		/***** !USE_UMC (to the end of this file) *****/
 
 #include <features.h>
 #include <inttypes.h>
@@ -51,41 +26,61 @@ do { \
 #include <syscall.h>
 #include <execinfo.h>
 #include <valgrind.h>
-
-#include <stdio.h>
 #include <sys/epoll.h>
 #include <pthread.h>
-
-#define sys_trace(fmtargs...)		sys_msg("TRACE: "fmtargs)
-#define sys_error(fmtargs...)		sys_msg("ERROR: "fmtargs)
-#define sys_warning(fmtargs...)		sys_msg("WARNING: "fmtargs)
-#define sys_notice(fmtargs...)		sys_msg("NOTICE: "fmtargs)
-#define sys_info(fmtargs...)		sys_msg("INFO: "fmtargs)
-
-#define sys_msg(fmtargs...)		_sys_msg(""fmtargs)
-#define _sys_msg(fmt, args...) \
-	    fprintf(stderr, "%s:%d: "fmt"\n", __func__, __LINE__, ##args)
-
-#include "sys_assert.h"		/* include after defining sys_error */
-
-#define WARN_ONCE(cond, fmtargs...) \
-do { \
-    static bool been_here = false; \
-    if (!been_here) { \
-	been_here = true; \
-	sys_warning(fmtargs); \
-    } \
-} while (0)
+#include <stdio.h>	//XXX move this and its parts of backtrace() to .c
 
 #ifndef gettid
 #define gettid()			((pid_t)(syscall(SYS_gettid)))
 #endif
 
-#define sys_abort()			({ do_backtrace("abort"); abort(); })
+#define printk(fmtargs...)		_printk(""fmtargs)
+#define _printk(fmt, args...) \
+	    fprintf(stderr, "%s:%d: "fmt, __func__, __LINE__, ##args)
 
-#define sys_system(cmd)			system(cmd)
-#define sys_vfprintf(fmtargs...)	vfprintf(fmtargs)
-#define sys_asprintf(fmtargs...)	asprintf(fmtargs)
+#define sys_backtrace(fmtargs...) _sys_backtrace(""fmtargs)
+#define _sys_backtrace(fmt, args...) do { \
+    if (RUNNING_ON_VALGRIND) { \
+	fflush(stderr); \
+	VALGRIND_PRINTF_BACKTRACE(fmt, ##args); \
+    } else { \
+	void *bt[3]; \
+	int nframe = backtrace(bt, sizeof(bt) / sizeof((bt)[0])); \
+	printk("ERROR: "fmt"\n", ##args); \
+	fflush(stderr); \
+	backtrace_symbols_fd(bt, nframe, fileno(stderr)); \
+    } \
+} while (0)
+
+#define panic(fmtargs...) do { sys_backtrace("PANIC: "fmtargs); abort(); } while (0)
+
+#define nlprintk(fmt, args...)		printk(fmt"\n", ##args)
+#define pr_err(fmtargs...)		printk("ERROR: "fmtargs)
+#define pr_warning(fmtargs...)		printk("WARNING: "fmtargs)
+#define pr_notice(fmtargs...)		printk("NOTICE: "fmtargs)
+#define pr_info(fmtargs...)		printk("INFO: "fmtargs)
+
+#define WARN_ONCE(cond, fmtargs...) \
+do { \
+    if (cond) { \
+	static bool been_here = false; \
+	if (!been_here) { \
+	    been_here = true; \
+	    pr_warning(fmtargs); \
+	} \
+    } \
+} while (0)
+
+#define kasprintf(gfp, fmt, args...) \
+({ \
+    char * _ret; \
+    int const _rc = asprintf(&_ret, fmt, ##args); \
+    if (_rc < 0) \
+        _ret = NULL; \
+    _ret; \
+})
+
+#define UMC_system(cmd) system(cmd)
 
 /* Remove the "const" qualifier from a pointer */
 static inline void *
@@ -97,25 +92,25 @@ _unconstify(const void * cvp)
 }
 
 static inline void *
-sys_mem_zalloc(size_t size)
+vzalloc(size_t size)
 {
     return calloc(1, size);
 }
 
 static inline void *
-sys_mem_alloc(size_t size)
+vmalloc(size_t size)
 {
     return malloc(size);
 }
 
 static inline void
-sys_mem_free(void * p)
+vfree(void * p)
 {
     free(p);
 }
 
 static inline char *
-sys_string_concat_free(char * prefix, char * suffix)
+UMC_string_concat_free(char * prefix, char * suffix)
 {
     char * str;
     int ret;
@@ -129,86 +124,86 @@ sys_string_concat_free(char * prefix, char * suffix)
     if (ret < 0)
 	str = NULL;
 
-    sys_mem_free(prefix);
-    sys_mem_free(suffix);
+    vfree(prefix);
+    vfree(suffix);
     return str;
 }
 
-typedef struct sys_mutex {
+struct mutex {
     pthread_mutex_t	lock;
-} sys_mutex_t;
+};
 
 static inline void
-sys_mutex_init(sys_mutex_t * l)
+mutex_init(struct mutex * l)
 {
     pthread_mutex_init(&l->lock, NULL);
 }
 
 static inline void
-sys_mutex_destroy(sys_mutex_t * l)
+mutex_destroy(struct mutex * l)
 {
     pthread_mutex_destroy(&l->lock);
 }
 
-static inline error_t
-sys_mutex_trylock(sys_mutex_t * l)
+static inline bool
+mutex_trylock(struct mutex * l)
 {
-    return -pthread_mutex_trylock(&l->lock);
+    return pthread_mutex_trylock(&l->lock) == 0;
 }
 
 static inline void
-sys_mutex_lock(sys_mutex_t * l)
+mutex_lock(struct mutex * l)
 {
     pthread_mutex_lock(&l->lock);
 }
 
 static inline void
-sys_mutex_unlock(sys_mutex_t * l)
+mutex_unlock(struct mutex * l)
 {
     pthread_mutex_unlock(&l->lock);
 }
 
 /* Use of this function is inherently racy */
 static inline bool
-sys_mutex_is_locked(sys_mutex_t * l)
+mutex_is_locked(struct mutex * l)
 {
-    if (!sys_mutex_trylock(l)) {
+    if (!mutex_trylock(l)) {
         return true;   /* we couldn't get the mutex, therefore it is locked */
     }
-    sys_mutex_unlock(l);       /* unlock the mutex we just locked to test it */
+    mutex_unlock(l);       /* unlock the mutex we just locked to test it */
     return false;       /* We got the mutex, therefore it was not locked */
 }
 
-struct sys_completion {
+struct completion {
     bool volatile	done;
-    sys_mutex_t		lock;
+    struct mutex		lock;
     pthread_cond_t	cond;
 };
 
 static inline void
-sys_completion_init(struct sys_completion * c)
+init_completion(struct completion * c)
 {
     memset(c, 0, sizeof(*c));
-    sys_mutex_init(&c->lock);
+    mutex_init(&c->lock);
     pthread_cond_init(&c->cond, NULL);
 }
 
 static inline void
-sys_complete(struct sys_completion * c)
+complete(struct completion * c)
 {
-    sys_mutex_lock(&c->lock);
+    mutex_lock(&c->lock);
     c->done = true;
     pthread_cond_broadcast(&c->cond);
-    sys_mutex_unlock(&c->lock);
+    mutex_unlock(&c->lock);
 }
 
 static inline void
-sys_wait_for_completion(struct sys_completion * c)
+wait_for_completion(struct completion * c)
 {
-    sys_mutex_lock(&c->lock);
+    mutex_lock(&c->lock);
     while (!c->done)
        pthread_cond_wait(&c->cond, &c->lock.lock);
-    sys_mutex_unlock(&c->lock);
+    mutex_unlock(&c->lock);
 }
 
 /**************************************/
@@ -229,7 +224,7 @@ struct inode {
     umode_t			i_mode;		/* e.g. S_ISREG */
     off_t			i_size;		/* device or file size in bytes */
     unsigned int		i_flags;	/* O_RDONLY, O_RDWR */
-    struct sys_mutex		i_mutex;
+    struct mutex		i_mutex;
     time_t			i_atime;
     time_t			i_mtime;
     time_t			i_ctime;
@@ -253,7 +248,7 @@ init_inode(struct inode * inode, int type, umode_t mode,
     inode->i_mode = mode;
     inode->i_size = (off_t)size;
     inode->i_flags = oflags;
-    sys_mutex_init(&inode->i_mutex);
+    mutex_init(&inode->i_mutex);
     inode->i_atime = inode->i_mtime = inode->i_ctime = time(NULL);
 }
 
@@ -269,12 +264,12 @@ iput(struct inode * inode)
     if (__sync_sub_and_fetch(&inode->i_count.counter, 1))
 	return;
 
-    sys_mutex_destroy(&inode->i_mutex);
+    mutex_destroy(&inode->i_mutex);
 
     if (inode->UMC_destructor)
 	inode->UMC_destructor(inode);
     else
-	sys_mem_free(inode);
+	vfree(inode);
 }
 
 struct file {

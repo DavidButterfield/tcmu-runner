@@ -15,16 +15,13 @@
 #include <fcntl.h>
 #include <unistd.h>
 
-#include "sys_impl.h"	    /* include before libtcmu_config.h */
-#include "libtcmur.h"
-
-#include <string.h>	    /* include after sys_impl.h */
+#include "libtcmur.h"	    /* include before libtcmu_config.h */
+#include <string.h>	    /* include after sys_impl.h (libtcmur.h) */
+#include <pthread.h>	    /* include after sys_impl.h (libtcmur.h) */
 
 #include "../libtcmu_log.h"
 #include "../libtcmu_config.h"
 #include "../libtcmu_time.h"
-
-#include <pthread.h>
 
 static int tcmu_log_level = TCMU_LOG_INFO;
 
@@ -86,7 +83,7 @@ log_internal(int pri, struct tcmu_device *dev, const char *funcname,
 	if (!fmt)
 		return;
 
-	sys_vfprintf(stderr, fmt, args);
+	vfprintf(stderr, fmt, args);
 }
 
 void tcmu_crit_message(struct tcmu_device *dev, const char *funcname,
