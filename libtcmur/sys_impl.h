@@ -25,7 +25,7 @@
 #include <unistd.h>
 #include <syscall.h>
 #include <execinfo.h>
-#include <valgrind.h>
+#include <valgrind/valgrind.h>
 #include <sys/epoll.h>
 #include <pthread.h>
 #include <stdio.h>	//XXX move this and its parts of backtrace() to .c
