@@ -183,7 +183,7 @@ ctl_write(struct file * unused, const char * buf, size_t iosize, off_t * lofsp)
 		    iprintf("Usage: "
 			"add tcmu_minor_number /subtype/handler_cfgstring\n");
 		else {
-		    error_t err = tcmur_device_add(minor, arg_str);
+		    error_t err = tcmur_device_add(minor, NULL, arg_str);
 		    if (err)
 			iprintf("tcmur_device_add(%d, \"%s\") returns %d\n",
 				minor, arg_str, err);

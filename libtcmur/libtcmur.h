@@ -78,8 +78,12 @@ extern error_t tcmur_check_config(const char * cfgstring);
  * handler is determined from the subtype in the first segment of cfgstring.
  * All tcmur subtypes share a common space of minor numbers.
  */
-extern error_t tcmur_device_add(int minor, const char * cfgstring);
+extern error_t tcmur_device_add(int minor, const char * devname, const char * cfgstring);
 extern error_t tcmur_device_remove(int minor);
+
+/* Lookup and hold the device -- returns a minor number or -errno */
+extern int tcmur_open(const char * devname, int openflags);
+extern error_t tcmur_close(int minor);
 
 /* tcmur_read(), tcmur_write() and tcmur_flush() start I/O operations to the
  * specified minor.  Errors in the I/O start process can be reported by -errno

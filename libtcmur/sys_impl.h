@@ -8,7 +8,9 @@
  */
 #ifndef SYS_IMPL_H
 #define SYS_IMPL_H
+#ifndef _GNU_SOURCE
 #define _GNU_SOURCE
+#endif
 
 #if defined(USE_UMC)
 

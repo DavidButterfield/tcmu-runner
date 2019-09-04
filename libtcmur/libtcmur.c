@@ -96,6 +96,18 @@ struct tcmu_device {
 	struct tcmur_handler *rhandler;
 };
 
+static int
+minor_of_devname(const char * devname)
+{
+    int minor;
+    for (minor = 0; minor < MAX_TCMUR_MINORS; minor++) {
+	struct tcmu_device * dev = device_of_minor(minor);
+	if (dev && !strcmp(dev->dev_name, devname))
+	    return minor;
+    }
+    return -1;
+}
+
 /* Find handler whose subtype string matches the subtype argument,
  * and pass back its slot number
  */
@@ -453,13 +465,29 @@ tcmur_get_max_xfer(int minor)
     return dev->max_xfer_len;
 }
 
+/* Lookup and hold the device -- returns a minor number or -errno */
+int
+tcmur_open(const char * devname, int openflags)
+{
+    int minor = minor_of_devname(devname);
+    //XXXXX need to hold the device
+    return minor;
+}
+
+error_t
+tcmur_close(int minor)
+{
+    //XXXXX need to unhold the device
+    return 0;
+}
+
 /* Add a block device of the given minor number.
  * cfg starts with subtype followed by the config string for the underlying
  * tcmu-runner handler:
  *			    /subtype/handler_cfg
  */
 error_t
-tcmur_device_add(int minor, const char * cfg)
+tcmur_device_add(int minor, const char * devname, const char * cfg)
 {
     struct tcmu_device * dev;
     size_t size;
@@ -488,8 +516,13 @@ tcmur_device_add(int minor, const char * cfg)
     /* Advance over handler_name to the handler-specific cfg string */
     cfg = strchrnul(cfg+1, '/');
 
-    snprintf(dev->dev_name, sizeof(dev->dev_name), "%s%03u",
-				    dev->rhandler->subtype, minor);
+    if (devname) {
+	//XXX should make sure name is unique
+    	snprintf(dev->dev_name, sizeof(dev->dev_name), "%s", devname);
+    } else {
+    	snprintf(dev->dev_name, sizeof(dev->dev_name), "%s%03u",
+					    dev->rhandler->subtype, minor);
+    }
     memset(dev->cfgstring_orig, 0, sizeof(dev->cfgstring_orig));
     strncpy(dev->cfgstring_orig, cfg, sizeof(dev->cfgstring_orig)-1);
     memcpy(dev->cfgstring, dev->cfgstring_orig, sizeof(dev->cfgstring));
@@ -564,6 +597,8 @@ tcmur_device_remove(int minor)
     struct tcmu_device * dev = device_of_minor(minor);
     if (!dev)
 	return -ENODEV;
+
+    //XXXXX need to -EBUSY if any holds
 
     tcmu_info("handler %s destroy tgt: %s\n",
 	       dev->rhandler->name, dev->dev_name);
