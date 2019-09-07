@@ -31,7 +31,7 @@
 
 #include <string.h>	/* include after sys_impl.h (libtcmur.h) */
 
-#define tcmu_io_trace_dev(dev, fmtargs...)  //  tcmu_dev_info(dev, "libtcmur: "fmtargs)
+#define tcmu_io_trace_dev(dev, fmtargs...)    // pr_notice("libtcmur: "fmtargs)
 
 /* Print up to two stacktraces of callers per stubbed function */
 #define STUB_WARN() do { \
@@ -39,6 +39,12 @@
     if (been_here++ < 2) \
 	sys_backtrace("UNEXPECTED CALL TO %s", __func__); \
 } while (0)
+
+#define _time_now() ({						\
+    struct timespec _t;						\
+    clock_gettime(CLOCK_MONOTONIC, &_t);			\
+    (uint64_t)(_t.tv_sec*1l*1000*1000*1000 + _t.tv_nsec);	\
+})
 
 /* Handlers may have code that calls these functions, even though that code
  * would only ever be executed if we called handle_command(), which we don't.
@@ -92,8 +98,11 @@ struct tcmu_device {
 	char dev_name[16];		    /* e.g. "qcow3" */
 	char cfgstring[PATH_MAX];
 	char cfgstring_orig[PATH_MAX];
+	struct workqueue_struct *workq;
 	void *hm_private;
 	struct tcmur_handler *rhandler;
+	uint64_t ncomplete;
+	uint64_t nsubmit;
 };
 
 static int
@@ -105,7 +114,7 @@ minor_of_devname(const char * devname)
 	if (dev && !strcmp(dev->dev_name, devname))
 	    return minor;
     }
-    return -1;
+    return -ENOENT;
 }
 
 /* Find handler whose subtype string matches the subtype argument,
@@ -140,7 +149,7 @@ static struct tcmur_handler *
 handler_of_cfgstr(const char * cfg)
 {
     struct tcmur_handler * handler;
-    char * hname;
+    char hname[64];
     const char * subtype = cfg;
     const char * p;
 
@@ -150,10 +159,9 @@ handler_of_cfgstr(const char * cfg)
     while (isalnum(*p))
 	p++;
 
-    hname = kasprintf(0, "%.*s", (int)(p - subtype), subtype);
+    snprintf(hname, sizeof(hname), "%.*s", (int)(p - subtype), subtype);
 
     handler = tcmur_find_handler(hname);
-    vfree(hname);
     return handler;
 }
 
@@ -193,7 +201,7 @@ tcmur_check_config(const char * cfg)
 	tcmu_warn("handler %s failed check_config(%s) reason: %s\n",
 		    handler->name, cfg, reason?:"none");
 	if (reason)
-	    vfree(reason);
+	    free(reason);
     }
 
     return err;
@@ -305,104 +313,145 @@ char * tcmu_dev_get_cfgstring(struct tcmu_device *dev)
 void tcmur_cmd_complete(struct tcmu_device *dev, void *data, int sts)
 {
     struct tcmur_cmd *tcmur_cmd = data;
+    struct libtcmur_task * task = container_of(tcmur_cmd, struct libtcmur_task, tcmur_cmd);
+    long qd = (long)(dev->nsubmit - ++dev->ncomplete);
+    uint64_t ms_delta = (_time_now() - task->t_start) / 1000000;
+    if (ms_delta >= 250)
+    	pr_notice("[%lu] call cmd->done %p ms=%ld QD=%ld\n", _time_now(), task, ms_delta, qd);
     tcmur_cmd->done(dev, tcmur_cmd, sts);
 }
 
 /******** Client calls these functions to invoke handlers ********/
 
-/* tcmur_read(), tcmur_write() and tcmur_flush() start I/O operations to the
- * specified minor.  Errors in the I/O start process are reported by a -errno
- * return from these calls.  A return value of zero denotes a successful I/O
- * start, in which case there will be a later completion call to cmd->done(),
- * which may report either an "sts" error, or success (denoted by TCMU_STS_OK).
- */
+static void
+tcmur_read_submit(struct work_struct * work)
+{
+    struct libtcmur_task * task = container_of(work, struct libtcmur_task, work_entry);
+    struct tcmur_cmd * cmd = &task->tcmur_cmd;
+    struct tcmu_device * dev = task->dev;
+
+    tcmu_io_trace_dev(dev, "[%lu] call handler->read %p\n", _time_now(), task);
+    task->t_start = _time_now();
+    int sts = dev->rhandler->read(dev, cmd, cmd->iovec, cmd->iov_cnt, task->nbyte, task->seekpos);
+    if (sts != TCMU_STS_OK || dev->rhandler->nr_threads > 0)
+	tcmur_cmd_complete(dev, cmd, sts);
+}
+
+static void
+tcmur_write_submit(struct work_struct * work)
+{
+    struct libtcmur_task * task = container_of(work, struct libtcmur_task, work_entry);
+    struct tcmur_cmd * cmd = &task->tcmur_cmd;
+    struct tcmu_device * dev = task->dev;
+    tcmu_io_trace_dev(dev, "[%lu] call handler->write %p\n", _time_now(), task);
+    task->t_start = _time_now();
+    int sts = dev->rhandler->write(dev, cmd, cmd->iovec, cmd->iov_cnt, task->nbyte, task->seekpos);
+    if (sts != TCMU_STS_OK || dev->rhandler->nr_threads > 0)
+	tcmur_cmd_complete(dev, cmd, sts);
+}
+
+static void
+tcmur_flush_submit(struct work_struct * work)
+{
+    struct libtcmur_task * task = container_of(work, struct libtcmur_task, work_entry);
+    struct tcmur_cmd * cmd = &task->tcmur_cmd;
+    struct tcmu_device * dev = task->dev;
+    tcmu_io_trace_dev(dev, "[%lu] call handler->flush %p\n", _time_now(), task);
+    task->t_start = _time_now();
+    int sts = dev->rhandler->flush(dev, cmd);
+    if (sts != TCMU_STS_OK || dev->rhandler->nr_threads > 0)
+	tcmur_cmd_complete(dev, cmd, sts);
+}
 
 error_t
-tcmur_read(int minor, struct tcmur_cmd * cmd,
+tcmur_read(int minor, struct libtcmur_task * task,
 	    struct iovec * iov, size_t niov, size_t nbyte, off_t seekpos)
 {
-    off_t endpos = seekpos + (ssize_t)nbyte;
+    struct tcmur_cmd * cmd = &task->tcmur_cmd;
     struct tcmu_device * dev = device_of_minor(minor);
-    error_t err = 0;
-    tcmur_status_t sts;
+    uint64_t dev_size = dev->num_lbas * dev->block_size;
+
+    assert(cmd->done);
 
     if (!dev)
 	return -ENODEV;	    /* nonexistent minor */
     if (!dev->rhandler->read)
 	return -ENXIO;	    /* handler has no read function */
-    if (endpos < seekpos)
+    if (seekpos + (off_t)nbyte < seekpos)
 	return -EINVAL;	    /* I/O exceeding device bounds */
-    if (endpos > (off_t)(dev->num_lbas * dev->block_size))
+    if (seekpos >= (off_t)dev_size)
+	return -EINVAL;	    /* I/O exceeding device bounds */
+    if (seekpos + (off_t)nbyte > (off_t)dev_size)
 	return -EINVAL;	    /* I/O exceeding device bounds */
 
-    tcmu_io_trace_dev(dev, "READ %lu bytes at offset %lu\n", nbyte, seekpos);
+    tcmu_io_trace_dev(dev, "READ %lu bytes at offset 0x%lx\n", nbyte, seekpos);
 
-    /* XXX Do handlers look at these, or only at the passed arguments? */
     cmd->iovec = iov;
     cmd->iov_cnt = niov;
 
-    sts = dev->rhandler->read(dev, cmd, iov, niov, nbyte, seekpos);
-    if (sts == TCMU_STS_OK) {
-	//XXX should let our caller do this
-	if (dev->rhandler->nr_threads)
-	    tcmur_cmd_complete(dev, cmd, sts);
+    task->dev = dev;
+    task->nbyte = nbyte;
+    task->seekpos = seekpos;
+
+    if (dev->workq) {
+	++dev->nsubmit;
+	INIT_WORK(&task->work_entry, tcmur_read_submit);
+	queue_work(dev->workq, &task->work_entry);
     } else {
-	tcmu_io_trace_dev(dev, "READ ERROR sts=%d", sts);
-	if (sts == TCMU_STS_NO_RESOURCE)
-	    err = -ENOMEM;
-	else
-	    err = -EIO;
+	tcmur_read_submit(&task->work_entry);
     }
 
-    return err;
+    return 0;
 }
 
 error_t
-tcmur_write(int minor, struct tcmur_cmd * cmd,
+tcmur_write(int minor, struct libtcmur_task * task,
 	    struct iovec * iov, size_t niov, size_t nbyte, off_t seekpos)
 {
-    off_t endpos = seekpos + (ssize_t)nbyte;
+    struct tcmur_cmd * cmd = &task->tcmur_cmd;
     struct tcmu_device * dev = device_of_minor(minor);
-    error_t err = 0;
-    tcmur_status_t sts;
+    uint64_t dev_size = dev->num_lbas * dev->block_size;
+
+    assert(cmd->done);
 
     if (!dev)
 	return -ENODEV;	    /* nonexistent minor */
     if (!dev->rhandler->write)
 	return -ENXIO;	    /* handler has no write function */
-    if (endpos < seekpos)
+    if (seekpos + (off_t)nbyte < seekpos)
 	return -EINVAL;	    /* I/O exceeding device bounds */
-    if (endpos > (off_t)(dev->num_lbas * dev->block_size))
+    if (seekpos >= (off_t)dev_size)
+	return -EINVAL;	    /* I/O exceeding device bounds */
+    if (seekpos + (off_t)nbyte > (off_t)dev_size)
 	return -EINVAL;	    /* I/O exceeding device bounds */
 
-    tcmu_io_trace_dev(dev, "WRITE %lu bytes at offset %lu\n", nbyte, seekpos);
+    tcmu_io_trace_dev(dev, "WRITE %lu bytes at offset 0x%lx\n", nbyte, seekpos);
 
-    /* XXX Do handlers look at these, or only at the passed arguments? */
     cmd->iovec = iov;
     cmd->iov_cnt = niov;
 
-    sts = dev->rhandler->write(dev, cmd, iov, niov, nbyte, seekpos);
-    if (sts == TCMU_STS_OK) {
-	//XXX should let our caller do this
-	if (dev->rhandler->nr_threads)
-	    tcmur_cmd_complete(dev, cmd, sts);
+    task->dev = dev;
+    task->nbyte = nbyte;
+    task->seekpos = seekpos;
+
+    if (dev->workq) {
+	++dev->nsubmit;
+	INIT_WORK(&task->work_entry, tcmur_write_submit);
+	queue_work(dev->workq, &task->work_entry);
     } else {
-	tcmu_io_trace_dev(dev, "WRITE ERROR sts=%d", sts);
-	if (sts == TCMU_STS_NO_RESOURCE)
-	    err = -ENOMEM;
-	else
-	    err = -EIO;
+	tcmur_write_submit(&task->work_entry);
     }
 
-    return err;
+    return 0;
 }
 
 error_t
-tcmur_flush(int minor, struct tcmur_cmd * cmd)
+tcmur_flush(int minor, struct libtcmur_task * task)
 {
+    struct tcmur_cmd * cmd = &task->tcmur_cmd;
     struct tcmu_device * dev = device_of_minor(minor);
-    error_t err = 0;
-    tcmur_status_t sts;
+
+    assert(cmd->done);
 
     if (!dev)
 	return -ENODEV;	    /* nonexistent minor */
@@ -411,20 +460,17 @@ tcmur_flush(int minor, struct tcmur_cmd * cmd)
 
     tcmu_io_trace_dev(dev, "flush\n");
 
-    sts = dev->rhandler->flush(dev, cmd);
-    if (sts == TCMU_STS_OK) {
-	//XXX should let our caller do this
-	if (dev->rhandler->nr_threads)
-	    tcmur_cmd_complete(dev, cmd, sts);
+    task->dev = dev;
+
+    if (dev->workq) {
+	++dev->nsubmit;
+	INIT_WORK(&task->work_entry, tcmur_flush_submit);
+	queue_work(dev->workq, &task->work_entry);
     } else {
-	tcmu_io_trace_dev(dev, "FLUSH ERROR sts=%d", sts);
-	if (sts == TCMU_STS_NO_RESOURCE)
-	    err = -ENOMEM;
-	else
-	    err = -EIO;
+	tcmur_flush_submit(&task->work_entry);
     }
 
-    return err;
+    return 0;
 }
 
 /******** Client calls these functions to manage devices and handlers ********/
@@ -509,7 +555,7 @@ tcmur_device_add(int minor, const char * devname, const char * cfg)
     //    knows how to tell if two cfgstrings refer to the same device.
     //	  (But we could still check for identical *strings* here)
 
-    dev = vzalloc(sizeof(*dev));
+    dev = calloc(1, sizeof(*dev));
     dev->rhandler = handler_of_cfgstr(cfg);
     assert(dev->rhandler);
 
@@ -584,10 +630,17 @@ tcmur_device_add(int minor, const char * devname, const char * cfg)
 
     the_tcmu_devices[minor] = dev;
 
+#ifdef USE_UMC
+    bio_tcmur_add(minor);
+
+    if (dev->rhandler->nr_threads)
+	dev->workq = create_workqueue("tcmur_submit");
+#endif
+
     return 0;
 
 fail_free:
-    vfree(dev);
+    free(dev);
     return err;
 }
 
@@ -600,6 +653,13 @@ tcmur_device_remove(int minor)
 
     //XXXXX need to -EBUSY if any holds
 
+#ifdef USE_UMC
+    if (dev->workq)
+	destroy_workqueue(dev->workq);
+
+    bio_tcmur_remove(minor);
+#endif
+
     tcmu_info("handler %s destroy tgt: %s\n",
 	       dev->rhandler->name, dev->dev_name);
 
@@ -608,7 +668,7 @@ tcmur_device_remove(int minor)
     if (dev->rhandler->close)
 	dev->rhandler->close(dev);
 
-    vfree(dev);
+    free(dev);
     return 0;
 }
 
@@ -620,7 +680,7 @@ error_t
 tcmur_handler_load(const char * subtype)
 {
     char *error;
-    char *path;
+    char path[4096];
     void *handle;
     int (*handler_init)(void);
     int ret;
@@ -642,13 +702,13 @@ tcmur_handler_load(const char * subtype)
 	return -ENOSPC;
     }
 
-    path = kasprintf(0, "%s%s.so", handler_prefix, subtype);
+    snprintf(path, sizeof(path), "%s%s.so", handler_prefix, subtype);
 
     handle = dlopen(path, RTLD_NOW|RTLD_LOCAL);
     if (!handle) {
 	tcmu_err("Could not open handler at %s: %s\n", path, dlerror());
 	ret = -ENOENT;
-	goto out_free;
+	goto out;
     }
 
     dlerror();
@@ -666,13 +726,12 @@ tcmur_handler_load(const char * subtype)
 	goto err_close;
     }
 
-out_free:
-    vfree(path);
+out:
     return ret;
 
 err_close:
-    dlclose(handle);
-    goto out_free;
+    //XXX dlclose(handle);
+    goto out;
 }
 
 error_t

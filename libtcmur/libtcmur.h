@@ -85,6 +85,28 @@ extern error_t tcmur_device_remove(int minor);
 extern int tcmur_open(const char * devname, int openflags);
 extern error_t tcmur_close(int minor);
 
+#ifndef USE_UMC
+/* If we don't have workqueues, just do the I/O directly */
+struct workqueue_struct;
+struct work_struct {
+    void (*fn)(struct work_struct *);
+};
+#define INIT_WORK(entry, func)	((entry)->fn = (func))
+#define queue_work(q, entry)	((entry)->fn(entry))	/* direct call */
+#endif
+
+/* Argument to read/write/flush: only tcmur_cmd->done needs to be filled in by
+ * the caller; other fields are used internally by the library
+ */
+struct libtcmur_task {
+    struct tcmur_cmd		tcmur_cmd;
+    struct work_struct		work_entry;
+    struct tcmu_device	      *	dev;
+    size_t			nbyte;
+    off_t			seekpos;
+    uint64_t			t_start;
+};
+
 /* tcmur_read(), tcmur_write() and tcmur_flush() start I/O operations to the
  * specified minor.  Errors in the I/O start process can be reported by -errno
  * return from these calls.  A return value of zero denotes a successful I/O
@@ -93,12 +115,11 @@ extern error_t tcmur_close(int minor);
  *
  * Note that the completion call may occur before the request call returns.
  */
-struct tcmur_cmd;
-extern error_t tcmur_read(int minor, struct tcmur_cmd *,
+extern error_t tcmur_read(int minor, struct libtcmur_task *,
 				struct iovec *, size_t niov, size_t, off_t);
-extern error_t tcmur_write(int minor, struct tcmur_cmd *,
+extern error_t tcmur_write(int minor, struct libtcmur_task *,
 				struct iovec *, size_t niov, size_t, off_t);
-extern error_t tcmur_flush(int minor, struct tcmur_cmd *);
+extern error_t tcmur_flush(int minor, struct libtcmur_task *);
 
 /* tcmur_get_dev_name() returns the device name of the specified minor.
  * If the minor does not exist then the return is NULL.

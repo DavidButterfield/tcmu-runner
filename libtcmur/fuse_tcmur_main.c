@@ -41,7 +41,7 @@ static const char * mountpoint = DEFAULT_FUSE_TCMUR_MOUNTPOINT;
 static const char * handler_prefix = DEFAULT_HANDLER_PATH "/handler_";
 static int tcmur_major_number;
 static int tcmur_max_minors = 256;
-#ifdef CONFIG_BIO
+#ifdef USE_UMC
 static bool enable_bio = false;
 #endif
 
@@ -65,7 +65,7 @@ int main(int argc, char * argv[])
     DO_OR_DIE(!((fnode_sys = fuse_tree_mkdir("sys", NULL)) != 0));
     DO_OR_DIE(!(             fuse_tree_mkdir("module", fnode_sys) != 0));
 
-#ifdef CONFIG_BIO
+#ifdef USE_UMC
     if (enable_bio) {
 	/* init fuse->bio translation and bio->tcmur translation */
 	DO_OR_DIE(fuse_bio_init());
@@ -77,7 +77,7 @@ int main(int argc, char * argv[])
 
     DO_OR_WARN(fuse_loop_run(NULL));		/* run fuse_main() */
 
-#ifdef CONFIG_BIO
+#ifdef USE_UMC
     if (enable_bio) {
 	DO_OR_WARN(bio_tcmur_exit());
 	DO_OR_WARN(fuse_bio_exit());

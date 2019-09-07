@@ -12,7 +12,7 @@
 #define _GNU_SOURCE
 #endif
 
-#if defined(USE_UMC)
+#ifdef USE_UMC
 
     #include "usermode_lib.h"
 
@@ -40,8 +40,8 @@
 #define _printk(fmt, args...) \
 	    fprintf(stderr, "%s:%d: "fmt, __func__, __LINE__, ##args)
 
-#define sys_backtrace(fmtargs...) _sys_backtrace(""fmtargs)
-#define _sys_backtrace(fmt, args...) do { \
+#define sys_backtrace(fmtargs...) impl_sys_backtrace(""fmtargs)
+#define impl_sys_backtrace(fmt, args...) do { \
     if (RUNNING_ON_VALGRIND) { \
 	fflush(stderr); \
 	VALGRIND_PRINTF_BACKTRACE(fmt, ##args); \

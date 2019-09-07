@@ -188,7 +188,7 @@ ctl_write(struct file * unused, const char * buf, size_t iosize, off_t * lofsp)
 			iprintf("tcmur_device_add(%d, \"%s\") returns %d\n",
 				minor, arg_str, err);
 		    else {
-#ifdef CONFIG_BIO
+#ifdef USE_UMC
 			bio_tcmur_add(minor);
 #else
 			/* Create the fuse node for the device */
@@ -223,7 +223,7 @@ ctl_write(struct file * unused, const char * buf, size_t iosize, off_t * lofsp)
 	    else {
 		error_t err;
 		int minor = (int)ul;
-#ifdef CONFIG_BIO
+#ifdef USE_UMC
 		err = bio_tcmur_remove(minor);
 #else
 		err = fuse_node_remove(tcmur_get_dev_name(minor), fnode_dev);

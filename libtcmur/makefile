@@ -1,16 +1,18 @@
-# hacked-up makefile with bogus dependencies
+# Hacked-up makefile with bogus dependencies
 
-#CONFIG_BIO = 1		# define this to use BIO
+# USE_UMC is defined by Makefiles calling here from outside the repository.
+# If set, the library is built to work with UMC and its BIO interface.
+#
+# Builds done in the local directory by default use a simpler fuse_tcmur interface.
+ifdef USE_UMC
 
-ifdef CONFIG_BIO
-
-CFLAGS += -DCONFIG_BIO -DUSE_UMC
-CFLAGS += -I ../../usermode_compat/src
-CFLAGS += -I ../../usermode_compat/src/arch/x86/include
-CFLAGS += -I ../../usermode_compat/src/include
+CFLAGS += -DUSE_UMC
+CFLAGS += -isystem ../../usermode_compat/src
+CFLAGS += -isystem ../../usermode_compat/src/arch/x86/include
+CFLAGS += -isystem ../../usermode_compat/src/include
 
 # For sys_service.h
-CFLAGS += -I ../../MTE/include
+CFLAGS += -isystem ../../MTE/include
 
 endif
 
@@ -42,7 +44,7 @@ WFLAGS_WARN += -Wformat=2
 WFLAGS_WARN += -Wswitch-default
 WFLAGS_WARN += -Wbad-function-cast
 
-ifndef CONFIG_BIO
+ifndef USE_UMC
 
 WFLAGS_WARN += -Wconversion
 WFLAGS_WARN += -Wpointer-arith
@@ -96,7 +98,7 @@ H_ALL += $(H_SYS) $(H_FUSE) $(H_RUNNER)
 
 .c.o:	$(H_ALL)
 
-ifndef CONFIG_BIO
+ifndef USE_UMC
 
 all:	fuse_tcmur
 	$(MAKE) -i cscope

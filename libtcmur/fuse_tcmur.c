@@ -22,14 +22,14 @@
 
 /***** Ferry an op from fuse to libtcmur and back *****/
 struct fuse_tcmur_op {
-    struct tcmur_cmd	    cmd;
+    struct libtcmur_task    tcmur_task;
     int			    minor;
     struct completion	    complete;
     tcmur_status_t	    sts;
     struct iovec	    iov[1];	/* we get singleton bufs from fuse */
 };
 
-#define op_of_cmd(cmd) container_of((cmd), struct fuse_tcmur_op, cmd)
+#define op_of_cmd(cmd) container_of((cmd), struct fuse_tcmur_op, tcmur_task.tcmur_cmd)
 
 /* Callback from the tcmur handler */
 static void
@@ -65,7 +65,7 @@ op_setup(struct fuse_tcmur_op * op, int minor, const void * buf, size_t iosize)
     op->minor = minor;
     init_completion(&op->complete);
 
-    struct tcmur_cmd * cmd = &op->cmd;
+    struct tcmur_cmd * cmd = &op->tcmur_task.tcmur_cmd;
     cmd->iovec = op->iov;
     cmd->iov_cnt = 1;
     cmd->done = io_done;
@@ -83,7 +83,8 @@ dev_read(struct file * file, void * buf, size_t iosize, off_t *lofsp)
 
     op_setup(&op, minor, buf, iosize);
 
-    err = tcmur_read(minor, &op.cmd, op.cmd.iovec, op.cmd.iov_cnt, iosize, *lofsp);
+    err = tcmur_read(minor, &op.tcmur_task, op.tcmur_task.tcmur_cmd.iovec,
+		    	     op.tcmur_task.tcmur_cmd.iov_cnt, iosize, *lofsp);
     if (err)
 	return err;
 
@@ -102,7 +103,8 @@ dev_write(struct file * file, const char * buf, size_t iosize, off_t *lofsp)
 
     op_setup(&op, minor, buf, iosize);
 
-    err = tcmur_write(minor, &op.cmd, op.cmd.iovec, op.cmd.iov_cnt, iosize, *lofsp);
+    err = tcmur_write(minor, &op.tcmur_task, op.tcmur_task.tcmur_cmd.iovec,
+		    	      op.tcmur_task.tcmur_cmd.iov_cnt, iosize, *lofsp);
     if (err)
 	return err;
 
@@ -121,7 +123,7 @@ dev_sync(struct file * file, int datasync)
 
     op_setup(&op, minor, NULL, 0);
 
-    err = tcmur_flush(minor, &op.cmd);
+    err = tcmur_flush(minor, &op.tcmur_task);
     if (err)
 	return err;
 
