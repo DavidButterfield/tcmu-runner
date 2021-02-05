@@ -14,6 +14,7 @@ option(with-rbd "build Ceph rbd handler" true)
 option(with-zbc "build zbc handler" true)
 option(with-fbo "build fbo handler" true)
 option(with-ram "build ram handler" true)
+option(with-dbd "build dbd handler" true)
 option(with-tcmalloc "link against tcmalloc" false)
 
 find_library(LIBNL_LIB nl-3)
@@ -95,7 +96,41 @@ target_link_libraries(tcmu_static
   ${TCMALLOC_LIB}
   )
 
+#######################################################
+
+# Stuff for building a library with the full binary except main
+add_library(tcmulib_static
+  tcmur_cmd_handler.c
+  tcmur_aio.c
+  tcmur_device.c
+  target.c
+  alua.c
+  scsi.c
+  libmain.c
+  tcmuhandler-generated.c
+  )
+target_link_libraries(tcmulib_static tcmu)
+target_include_directories(tcmulib_static
+  PUBLIC ${PROJECT_BINARY_DIR}
+  PUBLIC ${GLIB_INCLUDE_DIRS}
+  PUBLIC ${KMOD_INCLUDE_DIRS}
+  PUBLIC ${PROJECT_SOURCE_DIR}/ccan
+  )
+target_link_libraries(tcmulib_static
+  -Wl,-r
+  ${GLIB_LIBRARIES}
+  ${PTHREAD}
+  ${DL}
+  ${KMOD_LIBRARIES}
+  ${TCMALLOC_LIB}
+  -Wl,--no-export-dynamic
+  -Wl,--dynamic-list=${CMAKE_SOURCE_DIR}/main-syms.txt
+  )
+
+#######################################################
+
 # Stuff for building the main binary
+
 add_executable(tcmu-runner
   tcmur_cmd_handler.c
   tcmur_aio.c
@@ -283,6 +318,26 @@ if (with-ram)
 	  )
 	install(TARGETS handler_ram DESTINATION ${CMAKE_INSTALL_LIBDIR}/tcmu-runner)
 endif (with-ram)
+
+if (with-dbd)
+	# Stuff for building the dbd handler
+	add_library(handler_dbd
+	  SHARED
+	  dbd.c
+	  )
+	set_target_properties(handler_dbd
+	  PROPERTIES
+	  PREFIX ""
+	  )
+	target_include_directories(handler_dbd
+	  PUBLIC ${PROJECT_SOURCE_DIR}/ccan
+	  )
+
+	target_link_libraries(handler_dbd
+	  ${TCMALLOC_LIB}
+	  )
+	install(TARGETS handler_dbd DESTINATION ${CMAKE_INSTALL_LIBDIR}/tcmu-runner)
+endif (with-dbd)
 
 if (with-qcow)
 	find_package(ZLIB REQUIRED)
