@@ -503,6 +503,11 @@ fnode_lookup(fuse_node_t fnode_root, const char * path)
     assert(S_ISDIR(fnode_root->inode->i_mode),"%s has mode 0%02o",
 		    fnode_root->name, fnode_root->inode->i_mode);
     assert_tree_locked();
+    if (!path) {
+	WARN_ONCE(!path, "fnode_lookup(%s (%p), NULL_PATH\n",
+				fnode_root->name, fnode_root);
+	path = "";
+    }
 
     while (*path == '/')
 	path++;

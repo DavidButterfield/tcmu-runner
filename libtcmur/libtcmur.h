@@ -33,7 +33,7 @@
 #define HAVE_TYPEOF		1
 #ifdef USE_UMC
   #define list_node list_head
-  /* UMC provides these thiings */
+  /* UMC provides these things */
   #define _SYS_UIO_H
   #define CCAN_LIST_H
 #endif
